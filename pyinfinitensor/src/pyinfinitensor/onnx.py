@@ -1535,6 +1535,17 @@ class OnnxStub:
                 "inputShapes must contain one shape per model input; expected "
                 "{}, got {}".format(len(self.inputs), len(inputShapes))
             )
+        # Shapes that are already in place need nothing done to them, and one
+        # shape is commonly asked for many times over -- a batch size that
+        # holds from one inference to the next. Laying the memory out again
+        # costs more than running the whole graph, so it is worth not doing.
+        # A shape equal to the one a tensor already carries is valid by having
+        # been accepted once, so nothing is skipped but the work itself.
+        if all(
+            list(requested) == self.inputs[name].shape()
+            for requested, name in zip(inputShapes, self.inputs)
+        ):
+            return
         for newInput, oldInput in zip(inputShapes, self.inputs):
             oldTensor = self.inputs[oldInput]
             try:

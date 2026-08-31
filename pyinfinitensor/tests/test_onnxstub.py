@@ -226,6 +226,40 @@ class TestOnnxStubImport(unittest.TestCase):
         self.assertEqual(stub.getShape("images"), [4, 3, 224, 224])
         self.assertEqual(stub.getShape("y"), [4, 3, 224, 224])
 
+    def test_set_input_applies_a_change_beside_an_unchanged_shape(self):
+        model = make_model(
+            [helper.make_node("Add", ["a", "b"], ["y"])],
+            [value_info("a", ["batch", 4]), value_info("b", ["batch", 4])],
+            [value_info("y", ["batch", 4])],
+        )
+        stub = import_model(model)
+
+        # Asking for a shape a tensor already carries is skipped as having
+        # nothing to do, so a change asked for beside it must still land.
+        stub.set_input([[3, 4], [3, 4]])
+        self.assertEqual(stub.tensors["y"].shape(), [3, 4])
+
+        stub.set_input([[5, 4], [5, 4]])
+        self.assertEqual(stub.tensors["y"].shape(), [5, 4])
+
+        # And the same shape twice over leaves everything as it was.
+        stub.set_input([[5, 4], [5, 4]])
+        self.assertEqual(stub.tensors["y"].shape(), [5, 4])
+
+    def test_set_input_keeps_the_data_written_before_it(self):
+        stub = import_model(_reshape_chain_model([15]))
+        stub.set_input([[2, 3, 5]])
+        written = np.arange(2 * 15, dtype=np.float32)
+        stub.tensors["x"].copyin_float(written.tolist())
+
+        # A shape that is already in place leaves the memory alone, so what was
+        # written into it is still there to be run on.
+        stub.set_input([[2, 3, 5]])
+        stub.run()
+
+        got = np.asarray(stub.tensors["y"].copyout_float(), dtype=np.float32)
+        self.assertTrue(np.array_equal(got, written))
+
     def test_set_input_rejects_fixed_dim_change(self):
         model = make_model(
             [helper.make_node("Identity", ["images"], ["y"])],
