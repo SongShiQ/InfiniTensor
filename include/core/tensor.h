@@ -17,6 +17,18 @@ namespace infini {
 // TODO: how to deal with this
 using ShapeElem = int;
 using Shape = vector<ShapeElem>;
+
+/// @brief Describes whether one dimension may change between executions.
+///
+/// It mirrors how ONNX declares a dimension: `dim_value` yields a fixed
+/// dimension, `dim_param` yields a symbolic one carrying its name, and a
+/// dimension with neither is dynamic but anonymous.
+struct DimDesc {
+    bool dynamic = false; ///< Whether the dimension may change.
+    string name;          ///< Symbolic name, empty when there is none.
+};
+using DimDescs = vector<DimDesc>;
+
 class TensorObj : public TensorBaseObj {
   private:
     Shape shape;
@@ -24,6 +36,9 @@ class TensorObj : public TensorBaseObj {
     Fuid fuid;    // Cloned tensors share the same id. Tensors constructed from
                   // scratch have a new id.
     TensorType tensorType = TensorType::others;
+    // Per-dimension dynamicity. Empty means the tensor never declared which
+    // dimensions are dynamic, in which case its shape may be replaced freely.
+    DimDescs dimDescs;
 
   public:
     TensorObj(Shape shape, DataType dtype, Runtime runtime);
@@ -36,6 +51,21 @@ class TensorObj : public TensorBaseObj {
     Shape getDims() const { return shape; }
     void setShape(Shape shape_);
     size_t getRank() const { return shape.size(); }
+
+    /// @brief Declares which dimensions are dynamic. Once declared, the fixed
+    /// dimensions are protected by `validateShapeChange`.
+    void setDimDescs(DimDescs descs);
+    const DimDescs &getDimDescs() const { return dimDescs; }
+    /// @brief Whether dimension `dim` may change. Tensors without declared
+    /// dimensionality report every dimension as dynamic, matching the
+    /// historical behavior of replacing their shape freely.
+    bool isDimDynamic(size_t dim) const;
+    /// @brief Symbolic name of dimension `dim`, empty when it has none.
+    string getDimName(size_t dim) const;
+    /// @brief Throws when `target` violates the declared dimensionality.
+    /// Does nothing for tensors that never declared it.
+    void validateShapeChange(const Shape &target) const;
+
     Shape getStride() const;
     size_t getOffset(const vector<int> &ds) const;
     void dataMalloc();

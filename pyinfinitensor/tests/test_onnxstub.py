@@ -140,6 +140,73 @@ class TestOnnxStubImport(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expected 1, got 2"):
             stub.set_input([[1, 2], [1, 2]])
 
+    def test_dim_descs_distinguish_dimension_states(self):
+        # "batch" and "height" are symbolic, 3 is fixed, the last one is
+        # dynamic but anonymous.
+        shape = ["batch", 3, "height", None]
+        model = make_model(
+            [helper.make_node("Identity", ["images"], ["y"])],
+            [value_info("images", shape)],
+            [value_info("y", shape)],
+        )
+        stub = import_model(model)
+        images = stub.inputs["images"]
+
+        self.assertEqual(
+            [(desc.dynamic, desc.name) for desc in images.dim_descs()],
+            [(True, "batch"), (False, ""), (True, "height"), (True, "")],
+        )
+        self.assertEqual(
+            [images.is_dim_dynamic(i) for i in range(4)],
+            [True, False, True, True],
+        )
+        self.assertEqual(
+            [images.dim_name(i) for i in range(4)],
+            ["batch", "", "height", ""],
+        )
+
+    def test_static_model_declares_no_dynamic_dim(self):
+        model = make_model(
+            [helper.make_node("Identity", ["x"], ["y"])],
+            [value_info("x", [1, 2])],
+            [value_info("y", [1, 2])],
+        )
+        stub = import_model(model)
+
+        # Nothing was declared, so the shape stays replaceable as a whole.
+        self.assertEqual(stub.inputs["x"].dim_descs(), [])
+        stub.set_input([[8192, 2]])
+        self.assertEqual(stub.getShape("y"), [8192, 2])
+
+    def test_set_input_accepts_dynamic_dims(self):
+        model = make_model(
+            [helper.make_node("Identity", ["images"], ["y"])],
+            [value_info("images", ["batch", 3, "height", "width"])],
+            [value_info("y", ["batch", 3, "height", "width"])],
+        )
+        stub = import_model(model)
+
+        stub.set_input([[4, 3, 224, 224]])
+        self.assertEqual(stub.getShape("images"), [4, 3, 224, 224])
+        self.assertEqual(stub.getShape("y"), [4, 3, 224, 224])
+
+    def test_set_input_rejects_fixed_dim_change(self):
+        model = make_model(
+            [helper.make_node("Identity", ["images"], ["y"])],
+            [value_info("images", ["batch", 3, "height", "width"])],
+            [value_info("y", ["batch", 3, "height", "width"])],
+        )
+        stub = import_model(model)
+
+        with self.assertRaisesRegex(
+            RuntimeError, 'input "images".*dim 1 is fixed, expected 3 but got 5'
+        ):
+            stub.set_input([[4, 5, 224, 224]])
+        with self.assertRaisesRegex(RuntimeError, "declares rank 4 but got rank 3"):
+            stub.set_input([[4, 3, 224]])
+        with self.assertRaisesRegex(RuntimeError, "dim 0 must be positive, but got 0"):
+            stub.set_input([[0, 3, 224, 224]])
+
     def test_initializer_is_restored_after_reallocation(self):
         weight = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
         model = make_model(

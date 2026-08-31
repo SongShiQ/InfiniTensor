@@ -132,6 +132,7 @@ class GraphHandlerObj {
     inline void shape_infer() { g->shape_infer(); }
 
     void change_shape(const vector<int> &shape, int tensorId);
+    void set_dim_descs(const vector<DimDesc> &descs, int tensorId);
     //------ runtime
 
     inline void data_malloc(bool useNaiveAllocator = false,

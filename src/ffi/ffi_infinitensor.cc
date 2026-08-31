@@ -475,10 +475,23 @@ void init_graph_builder(py::module &m) {
         .def("init_comm", &ASCENDRuntimeObj::initComm);
     ;
 #endif
+    py::class_<DimDesc>(m, "DimDesc")
+        .def(py::init<>())
+        .def(py::init([](bool dynamic, string name) {
+                 return DimDesc{dynamic, std::move(name)};
+             }),
+             py::arg("dynamic"), py::arg("name") = string())
+        .def_readwrite("dynamic", &DimDesc::dynamic)
+        .def_readwrite("name", &DimDesc::name);
     py::class_<TensorObj, std::shared_ptr<TensorObj>>(m, "Tensor",
                                                       py::buffer_protocol())
         .def("fuid", &TensorObj::getFuid, policy::automatic)
         .def("shape", &TensorObj::getDims, policy::move)
+        // Must copy: `move` would steal the names out of the tensor, because
+        // pybind's move constructor casts away the constness of the reference.
+        .def("dim_descs", &TensorObj::getDimDescs, policy::copy)
+        .def("is_dim_dynamic", &TensorObj::isDimDynamic, policy::automatic)
+        .def("dim_name", &TensorObj::getDimName, policy::move)
         .def("set_weight", &TensorObj::setWeight, policy::move)
         .def("set_input", &TensorObj::setInput, policy::move)
         .def("set_output", &TensorObj::setOutput, policy::move)
@@ -633,6 +646,7 @@ void init_graph_builder(py::module &m) {
 #endif
         .def("shape_infer", &Handler::shape_infer, policy::automatic)
         .def("change_shape", &Handler::change_shape, policy::automatic)
+        .def("set_dim_descs", &Handler::set_dim_descs, policy::automatic)
         .def("getDims", &Handler::getDims, policy::automatic)
         .def("get_perf_time", &Handler::get_perf_time, policy::automatic);
 }

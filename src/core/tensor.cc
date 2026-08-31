@@ -90,6 +90,46 @@ void TensorObj::setShape(Shape shape_) {
     notifyCaptureState(false);
 }
 
+void TensorObj::setDimDescs(DimDescs descs) {
+    IT_ASSERT(descs.empty() || descs.size() == shape.size(),
+              "dimension descriptions must match the tensor rank");
+    dimDescs = std::move(descs);
+}
+
+bool TensorObj::isDimDynamic(size_t dim) const {
+    IT_ASSERT(dim < shape.size());
+    // Without declared dimensionality every dimension stays replaceable.
+    return dimDescs.empty() || dimDescs[dim].dynamic;
+}
+
+string TensorObj::getDimName(size_t dim) const {
+    IT_ASSERT(dim < shape.size());
+    return dimDescs.empty() ? string() : dimDescs[dim].name;
+}
+
+void TensorObj::validateShapeChange(const Shape &target) const {
+    if (dimDescs.empty())
+        return;
+    IT_ASSERT(target.size() == shape.size(),
+              "tensor " + std::to_string(guid) + " declares rank " +
+                  std::to_string(shape.size()) + " but got rank " +
+                  std::to_string(target.size()));
+    for (size_t i = 0; i < target.size(); ++i) {
+        if (dimDescs[i].dynamic) {
+            IT_ASSERT(target[i] > 0, "tensor " + std::to_string(guid) +
+                                         " dim " + std::to_string(i) +
+                                         " must be positive, but got " +
+                                         std::to_string(target[i]));
+            continue;
+        }
+        IT_ASSERT(target[i] == shape[i],
+                  "tensor " + std::to_string(guid) + " dim " +
+                      std::to_string(i) + " is fixed, expected " +
+                      std::to_string(shape[i]) + " but got " +
+                      std::to_string(target[i]));
+    }
+}
+
 void TensorObj::dumpData(std::ofstream &ofs) const {
     IT_ASSERT(data != nullptr);
     if (!runtime->isCpu())

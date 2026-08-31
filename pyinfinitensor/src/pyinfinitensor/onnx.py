@@ -126,12 +126,18 @@ class OnnxStub:
             tensors[initializer.name].set_weight()
 
         for input in model.graph.input:
-            dims = _take_shape_dim(input.type.tensor_type.shape)
+            shape_proto = input.type.tensor_type.shape
+            dims = _take_shape_dim(shape_proto)
             if input.name not in tensors.keys():
                 tensors[input.name] = self.handler.tensor(
                     dims, input.type.tensor_type.elem_type
                 )
                 tensors[input.name].set_input()
+                # Keep which dimensions the model declared dynamic, so that
+                # later shape changes can reject illegal ones.
+                descs = _take_dim_descs(shape_proto)
+                if descs:
+                    self.handler.set_dim_descs(descs, tensors[input.name].fuid())
 
         for node_idx in sorted_nodes:
             node = model.graph.node[node_idx]
@@ -1509,7 +1515,11 @@ class OnnxStub:
             )
         for newInput, oldInput in zip(inputShapes, self.inputs):
             oldTensor = self.inputs[oldInput]
-            self.handler.change_shape(newInput, oldTensor.fuid())
+            try:
+                self.handler.change_shape(newInput, oldTensor.fuid())
+            except RuntimeError as e:
+                # Name the offending input; the backend only knows tensor ids.
+                raise RuntimeError('input "{}": {}'.format(oldInput, e)) from e
         self.handler.shape_infer()
         self.init()
 
@@ -1624,3 +1634,21 @@ def _parse_data_fp16(tensor: TensorProto):
 
 def _take_shape_dim(shape: TensorShapeProto) -> List[int]:
     return [(d.dim_value if d.dim_value > 0 else 1) for d in shape.dim]
+
+
+def _take_dim_descs(shape: TensorShapeProto) -> List[backend.DimDesc]:
+    """Describe each dimension of `shape` as fixed, symbolic or unknown.
+
+    Returns an empty list when every dimension is fixed, which tells the
+    backend that the tensor never declared its dynamicity and that its shape
+    may still be replaced as a whole.
+    """
+    descs = []
+    for d in shape.dim:
+        if d.dim_value > 0:
+            descs.append(backend.DimDesc(False))
+        else:
+            # `dim_param` names a symbolic dimension; without it the dimension
+            # is dynamic but anonymous.
+            descs.append(backend.DimDesc(True, d.dim_param))
+    return descs if any(desc.dynamic for desc in descs) else []

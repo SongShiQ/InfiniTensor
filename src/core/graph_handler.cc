@@ -794,7 +794,15 @@ void GraphHandlerObj::change_shape(const vector<int> &shape, int tensorId) {
     auto tensor = g->getTensor(tensorId);
     IT_ASSERT(tensor != nullptr);
     IT_ASSERT(shape.size() != 0);
+    tensor->validateShapeChange(shape);
     tensor->setShape(shape);
+}
+
+void GraphHandlerObj::set_dim_descs(const vector<DimDesc> &descs,
+                                    int tensorId) {
+    auto tensor = g->getTensor(tensorId);
+    IT_ASSERT(tensor != nullptr);
+    tensor->setDimDescs(descs);
 }
 
 } // namespace infini
