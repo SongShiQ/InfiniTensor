@@ -45,6 +45,42 @@ def node_attribute(node, name):
     return helper.get_attribute_value(attribute)
 
 
+def _reshape_chain_model(tail):
+    """A model reshaping `x` to a target its own shape subgraph works out.
+
+    The batch dimension is read off `x` at run time and joined with `tail`, so
+    the target is an edge of the graph rather than a constant known when the
+    graph is built. A `tail` of -1 leaves the second dimension for Reshape to
+    work out from the number of elements.
+    """
+    return make_model(
+        [
+            helper.make_node("Shape", ["x"], ["s"]),
+            helper.make_node("Gather", ["s", "first"], ["g"], axis=0),
+            helper.make_node("Unsqueeze", ["g", "zero"], ["u"]),
+            helper.make_node("Concat", ["u", "tail"], ["target"], axis=0),
+            helper.make_node("Reshape", ["x", "target"], ["y"]),
+        ],
+        [value_info("x", ["batch", 3, 5])],
+        [value_info("y", ["batch", 15])],
+        [
+            initializer("first", 0, np.int64),
+            initializer("zero", [0], np.int64),
+            initializer("tail", tail, np.int64),
+        ],
+    )
+
+
+def _only_reshape(stub):
+    reshapes = [
+        op
+        for op in stub.handler.operators()
+        if op.op_type().id() == backend.OpTypeId.Reshape
+    ]
+    assert len(reshapes) == 1, len(reshapes)
+    return reshapes[0]
+
+
 class TestOnnxStubImport(unittest.TestCase):
     def test_get_perf_time_returns_backend_value(self):
         stub = OnnxStub.__new__(OnnxStub)
@@ -259,6 +295,73 @@ class TestOnnxStubImport(unittest.TestCase):
 
         # Every step of the chain follows the new shape of the input.
         self.assertEqual(values(), [[8, 3, 5], [8], [8], [8, 15]])
+
+    def test_reshape_reads_its_target_from_a_shape_subgraph(self):
+        model = _reshape_chain_model([15])
+        stub = import_model(model)
+
+        self.assertEqual(stub.tensors["y"].shape(), [1, 15])
+
+        # A shape the graph has already seen has to give the same answer the
+        # second time, which is the one way a stale cached value would show.
+        for dims, expected in ([4, 3, 5], [4, 15]), ([7, 3, 5], [7, 15]), (
+            [4, 3, 5],
+            [4, 15],
+        ):
+            stub.set_input([dims])
+            self.assertEqual(stub.tensors["y"].shape(), expected)
+
+    def test_reshape_resolves_minus_one_from_a_shape_subgraph(self):
+        model = _reshape_chain_model([-1])
+        stub = import_model(model)
+
+        # The target says [batch, -1], so the rest of the elements land in the
+        # second dimension.
+        self.assertEqual(stub.tensors["y"].shape(), [1, 15])
+
+        stub.set_input([[6, 3, 5]])
+
+        self.assertEqual(stub.tensors["y"].shape(), [6, 15])
+
+    def test_static_reshape_keeps_reading_a_constant_target(self):
+        model = make_model(
+            [helper.make_node("Reshape", ["x", "target"], ["y"])],
+            [value_info("x", [2, 3, 4])],
+            [value_info("y", [6, 4])],
+            [initializer("target", [6, 4], np.int64)],
+        )
+        stub = import_model(model)
+
+        self.assertEqual(stub.tensors["y"].shape(), [6, 4])
+        # A constant target stays an attribute, so the operator keeps the one
+        # input it has always had rather than gaining an edge.
+        reshape = _only_reshape(stub)
+        self.assertEqual(len(reshape.inputs()), 1)
+
+    def test_dynamic_reshape_takes_its_target_as_an_edge(self):
+        stub = import_model(_reshape_chain_model([15]))
+
+        reshape = _only_reshape(stub)
+        self.assertEqual(len(reshape.inputs()), 2)
+
+    def test_reshape_rejects_a_target_holding_real_data(self):
+        model = make_model(
+            [
+                helper.make_node("Gather", ["table", "index"], ["target"], axis=0),
+                helper.make_node("Reshape", ["x", "target"], ["y"]),
+            ],
+            [
+                value_info("x", [2, 3]),
+                value_info("index", [2], TensorProto.INT64),
+            ],
+            [value_info("y", [2, 3])],
+            [initializer("table", [[1, 2], [3, 4], [5, 6]], np.int64)],
+        )
+
+        # The target is gathered from a table of real numbers, so no shape can
+        # be worked out from it and the graph has to say so rather than guess.
+        with self.assertRaisesRegex(RuntimeError, "holds data rather than dimensions"):
+            import_model(model)
 
     def test_data_operators_work_out_no_dimensions(self):
         model = make_model(
@@ -570,6 +673,33 @@ class TestOnnxStubExport(unittest.TestCase):
         self.assertAlmostEqual(node_attribute(node, "beta"), 0.5)
         self.assertAlmostEqual(node_attribute(node, "bias"), 2.0)
         self.assertEqual(node_attribute(node, "size"), 3)
+
+    def test_shape_subgraph_survives_a_round_trip(self):
+        stub = import_model(_reshape_chain_model([15]))
+
+        exported = stub.to_onnx("roundtrip")
+        checker.check_model(exported)
+
+        self.assertEqual(
+            [node.op_type for node in exported.graph.node],
+            ["Shape", "Gather", "Unsqueeze", "Concat", "Reshape"],
+        )
+        # A Reshape already holding its target as an edge must not have a
+        # second one spelled out as a constant beside it.
+        reshape = next(
+            node for node in exported.graph.node if node.op_type == "Reshape"
+        )
+        self.assertEqual(len(reshape.input), 2)
+
+        # The exported model has to keep working out its own dimensions, which
+        # is what makes the round trip meaningful rather than merely valid.
+        name = exported.graph.output[0].name
+        again = import_model(exported)
+        self.assertEqual(again.tensors[name].shape(), [1, 15])
+
+        again.set_input([[6, 3, 5]])
+
+        self.assertEqual(again.tensors[name].shape(), [6, 15])
 
     def test_repeated_export_does_not_mutate_initializers(self):
         weight = initializer(

@@ -99,6 +99,7 @@ void export_values(py::module &m) {
         .VALUE(OpType, GatherElements)
         .VALUE(OpType, ReduceMean)
         .VALUE(OpType, ReduceSum)
+        .VALUE(OpType, Shape)
         .VALUE(OpType, Reshape)
         .VALUE(OpType, Squeeze)
         .VALUE(OpType, Unsqueeze)
@@ -603,6 +604,8 @@ void init_graph_builder(py::module &m) {
         .def("transpose", &Handler::transpose, policy::move)
         .def("depthToSpace", &Handler::depthToSpace, policy::move)
         .def("reshape", &Handler::reshape, policy::move)
+        .def("reshape_with_shape_input", &Handler::reshape_with_shape_input,
+             policy::move)
         .def("resize", &Handler::resize, policy::move)
         .def("squeeze", &Handler::squeeze, policy::move)
         .def("unsqueeze", &Handler::unsqueeze, policy::move)

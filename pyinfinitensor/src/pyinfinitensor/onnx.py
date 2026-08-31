@@ -680,12 +680,24 @@ class OnnxStub:
                     mode,
                 )
             elif node.op_type == "Reshape":
-                shape = _parse_static_input(data, node, 1, required=True)
-                tensors[node.output[0]] = self.handler.reshape(
-                    tensors[node.input[0]],
-                    tensors.get(node.output[0]),
-                    shape,
-                )
+                if _has_input(node, 1) and node.input[1] not in data:
+                    # The target shape is worked out from the shape of an
+                    # input, so wire it up as an edge of the graph instead of
+                    # reading a constant that is not there.
+                    tensors[node.output[0]] = (
+                        self.handler.reshape_with_shape_input(
+                            tensors[node.input[0]],
+                            tensors[node.input[1]],
+                            tensors.get(node.output[0]),
+                        )
+                    )
+                else:
+                    shape = _parse_static_input(data, node, 1, required=True)
+                    tensors[node.output[0]] = self.handler.reshape(
+                        tensors[node.input[0]],
+                        tensors.get(node.output[0]),
+                        shape,
+                    )
             elif node.op_type == "Resize":
                 output = tensors.get(node.output[0])
                 attributes = _parse_attribute(
@@ -1344,6 +1356,7 @@ class OnnxStub:
                 backend.OpTypeId.Sqrt,
                 backend.OpTypeId.Erf,
                 backend.OpTypeId.Neg,
+                backend.OpTypeId.Shape,
             ]:
                 ctx.push_node(make_node(ty.name, inputs, outputs, name))
             elif ty == backend.OpTypeId.Softmax:
@@ -1358,16 +1371,20 @@ class OnnxStub:
                 perm = backend.transpose_permute_of(op)
                 ctx.push_node(make_node(ty.name, inputs, outputs, name, perm=perm))
             elif ty == backend.OpTypeId.Reshape:
-                shape = backend.reshape_shape_of(op)
-                inputs.append(
-                    ctx.push_data_input(
-                        name,
-                        "shape",
-                        TensorProto.INT64,
-                        [len(shape)],
-                        shape,
+                # A Reshape reading its target from an edge already has the
+                # second input ONNX asks for; only the other shape has to spell
+                # the target out as a constant.
+                if len(inputs) == 1:
+                    shape = backend.reshape_shape_of(op)
+                    inputs.append(
+                        ctx.push_data_input(
+                            name,
+                            "shape",
+                            TensorProto.INT64,
+                            [len(shape)],
+                            shape,
+                        )
                     )
-                )
                 ctx.push_node(make_node(ty.name, inputs, outputs, name))
             elif ty == backend.OpTypeId.Squeeze:
                 axes = backend.squeeze_axes_of(op)

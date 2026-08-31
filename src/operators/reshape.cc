@@ -3,12 +3,12 @@
 #include <numeric>
 
 namespace infini {
-ReshapeObj::ReshapeObj(GraphObj *graph, Tensor input, Tensor output, Shape dims)
-    : OperatorObj(OpType::Reshape, {input}, {output}), dims(std::move(dims)) {
-    IT_ASSERT(checkValid(graph));
-}
-
-optional<vector<Shape>> ReshapeObj::inferShape(const TensorVec &inputs) {
+namespace {
+/// Works out the real output shape from a target holding the two placeholders
+/// ONNX allows: 0 keeps the input dimension in that position, and -1 stands for
+/// whatever is left over. Both ways of giving a target share this, so they
+/// cannot drift apart.
+Shape resolveTargetShape(const Shape &dims, const Shape &inputShape, int size) {
     int count = 0;
     for (auto x : dims) {
         if (x == -1) {
@@ -17,10 +17,8 @@ optional<vector<Shape>> ReshapeObj::inferShape(const TensorVec &inputs) {
         IT_ASSERT(x == -1 || x >= 0);
     }
     IT_ASSERT(count == 0 || count == 1);
-    auto inputShape = inputs[0]->getDims();
-    int size = inputs[0]->size();
     int index = -1;
-    outputShape = dims;
+    Shape outputShape = dims;
     for (int i = 0; i < (int)dims.size(); ++i) {
         if (dims[i] == 0) {
             outputShape[i] = inputShape[i];
@@ -37,7 +35,30 @@ optional<vector<Shape>> ReshapeObj::inferShape(const TensorVec &inputs) {
     int outputSize = std::accumulate(outputShape.begin(), outputShape.end(), 1,
                                      [](auto acc, auto x) { return acc * x; });
     IT_ASSERT(outputSize == size);
+    return outputShape;
+}
+} // namespace
 
+ReshapeObj::ReshapeObj(GraphObj *graph, Tensor input, Tensor output, Shape dims)
+    : OperatorObj(OpType::Reshape, {input}, {output}), dims(std::move(dims)) {
+    IT_ASSERT(checkValid(graph));
+}
+
+ReshapeObj::ReshapeObj(GraphObj *graph, Tensor input, Tensor shape,
+                       Tensor output)
+    : OperatorObj(OpType::Reshape, {input, shape}, {output}) {
+    IT_ASSERT(checkValid(graph));
+}
+
+optional<vector<Shape>> ReshapeObj::inferShape(const TensorVec &inputs) {
+    if (inputs.size() == 2) {
+        IT_ASSERT(inputs[1]->getShapeValue().has_value(),
+                  "the target shape of this Reshape is not known while shapes "
+                  "are inferred, so it holds data rather than dimensions");
+        dims = inputs[1]->getShapeValueAsShape();
+    }
+    outputShape = resolveTargetShape(dims, inputs[0]->getDims(),
+                                     static_cast<int>(inputs[0]->size()));
     return {{outputShape}};
 }
 

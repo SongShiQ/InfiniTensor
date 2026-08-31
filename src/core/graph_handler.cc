@@ -308,6 +308,18 @@ Tensor GraphHandlerObj::reshape(Tensor data, Tensor reshaped, Shape shape) {
     }
 }
 
+Tensor GraphHandlerObj::reshape_with_shape_input(Tensor data, Tensor shape,
+                                                 Tensor reshaped) {
+    if (reshaped) {
+        g->addOpWithOutputs<ReshapeObj>(std::move(data), std::move(shape),
+                                        reshaped);
+        return reshaped;
+    } else {
+        return g->addOp<ReshapeObj>(std::move(data), std::move(shape), reshaped)
+            ->getOutput();
+    }
+}
+
 Tensor GraphHandlerObj::resize(Tensor input, Tensor output,
                                const std::optional<vector<int>> &axes,
                                Tensor sizes, Tensor scales, Tensor roi,

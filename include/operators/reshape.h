@@ -22,12 +22,26 @@ class ReshapeObj : public OperatorObj {
      * @param outputShape The real shape of output tensor.
      */
     ReshapeObj(GraphObj *graph, Tensor input, Tensor output, Shape dims);
+    /**
+     * @brief Construct a new Reshape object reading its target from a tensor.
+     *
+     * This is the shape of ONNX Reshape, whose second input carries the target.
+     * That target has to be known while shapes are inferred, which holds when
+     * it describes dimensions rather than data -- see
+     * `TensorObj::getShapeValue`.
+     *
+     * @param graph The computation graph that this operator belongs to.
+     * @param input The input tensor.
+     * @param shape The tensor holding the shape to infer the output shape.
+     * @param output The output tensor.
+     */
+    ReshapeObj(GraphObj *graph, Tensor input, Tensor shape, Tensor output);
     OP_CLONE(ReshapeObj);
 
     optional<vector<Shape>> inferShape(const TensorVec &inputs) override;
 
     std::string toString() const override;
-    int numInputs() const override { return 1; }
+    int numInputs() const override { return inputs.size(); }
     int numOutputs() const override { return 1; }
 
     inline Shape getShape() const { return outputShape; }
