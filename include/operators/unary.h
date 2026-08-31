@@ -232,6 +232,12 @@ class ShapeObj : public OperatorObj {
     std::string toString() const override;
     int numInputs() const override { return 1; }
     int numOutputs() const override { return 1; }
+
+  private:
+    /// A shape reads nothing but the dimensions of its input, so those are the
+    /// whole of its workload, and it has no attributes of its own.
+    vector<int> getWorkloadVector() const override;
+    vector<int> getOpAttrVector() const override;
 };
 
 class PReluObj : public OperatorObj {

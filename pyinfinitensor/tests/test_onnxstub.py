@@ -311,6 +311,27 @@ class TestOnnxStubImport(unittest.TestCase):
             stub.set_input([dims])
             self.assertEqual(stub.tensors["y"].shape(), expected)
 
+    def test_shape_subgraph_runs_and_reshapes_the_data(self):
+        stub = import_model(_reshape_chain_model([15]))
+
+        # A shape the graph has already run has to give the same answer the
+        # second time, which is the one way a stale cached value would show.
+        for dims in [4, 3, 5], [7, 3, 5], [4, 3, 5]:
+            stub.set_input([dims])
+            data = np.arange(np.prod(dims), dtype=np.float32).reshape(dims)
+            stub.tensors["x"].copyin_float(data.flatten().tolist())
+
+            stub.run()
+
+            # Comparing the numbers matters as much as the shape here: a chain
+            # that worked out the wrong target would still hand back a tensor
+            # of a plausible shape holding the wrong elements.
+            got = np.asarray(stub.tensors["y"].copyout_float(), dtype=np.float32)
+            self.assertEqual(stub.tensors["y"].shape(), [dims[0], 15])
+            self.assertTrue(
+                np.array_equal(got.reshape(dims[0], 15), data.reshape(dims[0], 15))
+            )
+
     def test_reshape_resolves_minus_one_from_a_shape_subgraph(self):
         model = _reshape_chain_model([-1])
         stub = import_model(model)

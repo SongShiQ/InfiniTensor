@@ -266,6 +266,14 @@ std::string ShapeObj::toString() const {
     return os.str();
 }
 
+vector<int> ShapeObj::getWorkloadVector() const {
+    vector<int> ret = inputs[0]->getDims();
+    ret.emplace(ret.begin(), type.underlying());
+    return ret;
+}
+
+vector<int> ShapeObj::getOpAttrVector() const { return {type.underlying()}; }
+
 PReluObj::PReluObj(GraphObj *graph, Tensor input, Tensor alpha, Tensor output)
     : OperatorObj(OpType::PRelu, {input, alpha}, {output}) {
     IT_ASSERT(checkValid(graph));
