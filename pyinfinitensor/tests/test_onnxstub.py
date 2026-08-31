@@ -460,6 +460,79 @@ class TestOnnxStubImport(unittest.TestCase):
             expected = np.maximum(x.reshape(batch, 4) @ weight + bias, 0)
             np.testing.assert_allclose(got.reshape(batch, 3), expected, atol=1e-6)
 
+    def test_two_spatial_dimensions_move_independently(self):
+        """Height and width are both dynamic, and the chain reads each of them.
+
+        Reading only the batch leaves the interesting cases untested: here the
+        two numbers the chain carries come off an axis a pooling has already
+        halved, they move separately from one another, and the tensor cannot be
+        put back to four dimensions without both of them.
+        """
+        weight = (np.arange(4, dtype=np.float32).reshape(2, 2, 1, 1) / 4) - 0.5
+        model = make_model(
+            [
+                helper.make_node(
+                    "MaxPool", ["x"], ["p"], kernel_shape=[2, 2], strides=[2, 2]
+                ),
+                helper.make_node("Conv", ["p", "weight"], ["c"], pads=[0, 0, 0, 0]),
+                helper.make_node("Relu", ["c"], ["r"]),
+                # Take the batch, the pooled height and the pooled width out of
+                # the shape one at a time.
+                helper.make_node("Shape", ["r"], ["s"]),
+                helper.make_node("Gather", ["s", "i0"], ["n"], axis=0),
+                helper.make_node("Gather", ["s", "i2"], ["h"], axis=0),
+                helper.make_node("Gather", ["s", "i3"], ["w"], axis=0),
+                helper.make_node("Unsqueeze", ["n", "zero"], ["n1"]),
+                helper.make_node("Unsqueeze", ["h", "zero"], ["h1"]),
+                helper.make_node("Unsqueeze", ["w", "zero"], ["w1"]),
+                # Flatten both spatial axes into one whose length only this
+                # chain knows, then put the two of them back.
+                helper.make_node("Concat", ["n1", "two", "minus1"], ["flat"], axis=0),
+                helper.make_node("Reshape", ["r", "flat"], ["rows"]),
+                helper.make_node("Softmax", ["rows"], ["soft"], axis=-1),
+                helper.make_node("Concat", ["n1", "two", "h1", "w1"], ["back"], axis=0),
+                helper.make_node("Reshape", ["soft", "back"], ["y"]),
+            ],
+            [value_info("x", ["batch", 2, "height", "width"])],
+            [value_info("y", ["batch", 2, "oh", "ow"])],
+            [
+                initializer("weight", weight),
+                initializer("i0", 0, np.int64),
+                initializer("i2", 2, np.int64),
+                initializer("i3", 3, np.int64),
+                initializer("zero", [0], np.int64),
+                initializer("two", [2], np.int64),
+                initializer("minus1", [-1], np.int64),
+            ],
+        )
+        stub = import_model(model)
+
+        rng = np.random.default_rng(0)
+        # A repeat takes the unchanged-shape path. Then height and width move
+        # one at a time, and the last pair shrinks below an earlier one, where
+        # a buffer left from the larger shape would still read as big enough.
+        for n, h, w in [(1, 8, 8), (1, 8, 8), (1, 8, 12), (2, 12, 8), (1, 4, 4)]:
+            x = rng.standard_normal((n, 2, h, w)).astype(np.float32)
+            stub.set_input([[n, 2, h, w]])
+            stub.inputs["x"].copyin_numpy(x)
+
+            stub.run()
+
+            ph, pw = h // 2, w // 2
+            # MaxPool 2x2 stride 2 halves both spatial dimensions, then a 1x1
+            # convolution mixes the channels and leaves them alone.
+            pooled = x.reshape(n, 2, ph, 2, pw, 2).max(axis=(3, 5))
+            mixed = np.einsum("nchw,fc->nfhw", pooled, weight[:, :, 0, 0])
+            flat = np.maximum(mixed, 0).reshape(n, 2, -1)
+            shifted = flat - flat.max(axis=-1, keepdims=True)
+            soft = np.exp(shifted) / np.exp(shifted).sum(axis=-1, keepdims=True)
+
+            self.assertEqual(stub.outputs["y"].shape(), [n, 2, ph, pw])
+            got = np.asarray(stub.outputs["y"].copyout_float(), dtype=np.float32)
+            np.testing.assert_allclose(
+                got.reshape(n, 2, ph, pw), soft.reshape(n, 2, ph, pw), atol=1e-6
+            )
+
     def test_data_operators_work_out_no_dimensions(self):
         model = make_model(
             [helper.make_node("Gather", ["table", "index"], ["y"], axis=0)],
