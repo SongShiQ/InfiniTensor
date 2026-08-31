@@ -26,6 +26,18 @@ optional<vector<Shape>> UnsqueezeObj::inferShape(const TensorVec &inputs) {
     return {{outputShape}};
 }
 
+void UnsqueezeObj::inferShapeValue() {
+    if (!beginShapeValueUpdate()) {
+        return;
+    }
+    // Inserting dimensions of length one leaves the elements themselves alone.
+    const auto &value = *inputs[0]->getShapeValue();
+    if (value.size() != outputs[0]->size()) {
+        return;
+    }
+    outputs[0]->setShapeValue(value);
+}
+
 std::string UnsqueezeObj::toString() const {
     std::ostringstream os;
     os << "Unsqueeze[" << getGuid() << "]";

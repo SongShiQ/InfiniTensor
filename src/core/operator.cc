@@ -92,4 +92,21 @@ vector<DataType> OperatorObj::inferDataType() const {
     return inferDataType(inputs);
 }
 
+bool OperatorObj::beginShapeValueUpdate() {
+    for (const auto &output : outputs) {
+        output->clearShapeValue();
+    }
+    for (const auto &output : outputs) {
+        if (!output->canHoldShapeValue()) {
+            return false;
+        }
+    }
+    for (const auto &input : inputs) {
+        if (!input->getShapeValue().has_value()) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace infini

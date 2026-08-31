@@ -119,6 +119,15 @@ class OperatorObj : public Object {
     optional<vector<Shape>> inferShape();
     vector<DataType> inferDataType() const;
 
+    /// @brief Clears the shape values of the outputs and reports whether this
+    /// operator can work out new ones.
+    ///
+    /// An operator can only pass shapes along once every input carries a known
+    /// shape value and every output is able to hold one. Clearing first means a
+    /// value left over from an earlier shape never survives as a stale answer,
+    /// whether this operator goes on to write a new one or gives up.
+    bool beginShapeValueUpdate();
+
   private:
     /**
      * @brief The returned vector includes operator attributes, such as paddings

@@ -29,6 +29,31 @@ vector<DataType> GatherObj::inferDataType(const TensorVec &inputs) const {
     return {inputs[0]->getDType()};
 }
 
+void GatherObj::inferShapeValue() {
+    if (!beginShapeValueUpdate()) {
+        return;
+    }
+    // A shape subgraph gathers from the result of `Shape`, which is a list of
+    // dimensions, so only picking along that single axis makes sense here.
+    if (inputs[0]->getRank() != 1 || axis != 0) {
+        return;
+    }
+    const auto &dims = *inputs[0]->getShapeValue();
+    const auto &indices = *inputs[1]->getShapeValue();
+    vector<int64_t> picked;
+    picked.reserve(indices.size());
+    for (const auto index : indices) {
+        // ONNX counts a negative index back from the end.
+        const auto at =
+            index < 0 ? index + static_cast<int64_t>(dims.size()) : index;
+        if (at < 0 || at >= static_cast<int64_t>(dims.size())) {
+            return;
+        }
+        picked.push_back(dims[at]);
+    }
+    outputs[0]->setShapeValue(std::move(picked));
+}
+
 // TODO:should check everytime index updated.
 bool GatherObj::CheckIndexValid() const {
     auto index = inputs[1];

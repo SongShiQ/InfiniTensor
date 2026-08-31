@@ -130,9 +130,14 @@ void TensorObj::validateShapeChange(const Shape &target) const {
     }
 }
 
+bool TensorObj::canHoldShapeValue() const {
+    return (dtype == DataType::Int32 || dtype == DataType::Int64) &&
+           shape.size() <= 1;
+}
+
 void TensorObj::setShapeValue(vector<int64_t> value) {
-    IT_ASSERT(dtype == DataType::Int32 || dtype == DataType::Int64,
-              "only an integer tensor can hold a shape value");
+    IT_ASSERT(canHoldShapeValue(),
+              "only a rank one integer tensor can hold a shape value");
     shapeValue = std::move(value);
 }
 

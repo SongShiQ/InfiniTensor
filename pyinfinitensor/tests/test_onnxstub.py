@@ -234,6 +234,44 @@ class TestOnnxStubImport(unittest.TestCase):
 
         self.assertEqual(stub.tensors["axes"].shape_value(), [0, 2])
 
+    def test_shape_subgraph_works_out_its_dimensions(self):
+        model = make_model(
+            [
+                helper.make_node("Shape", ["x"], ["s"]),
+                helper.make_node("Gather", ["s", "first"], ["g"], axis=0),
+                helper.make_node("Unsqueeze", ["g", "zero"], ["u"]),
+                helper.make_node("Concat", ["u", "tail"], ["c"], axis=0),
+            ],
+            [value_info("x", ["batch", 3, 5])],
+            [value_info("c", [2], TensorProto.INT64)],
+            [
+                initializer("first", 0, np.int64),
+                initializer("zero", [0], np.int64),
+                initializer("tail", [15], np.int64),
+            ],
+        )
+        stub = import_model(model)
+
+        values = lambda: [stub.tensors[n].shape_value() for n in "sguc"]
+        self.assertEqual(values(), [[1, 3, 5], [1], [1], [1, 15]])
+
+        stub.set_input([[8, 3, 5]])
+
+        # Every step of the chain follows the new shape of the input.
+        self.assertEqual(values(), [[8, 3, 5], [8], [8], [8, 15]])
+
+    def test_data_operators_work_out_no_dimensions(self):
+        model = make_model(
+            [helper.make_node("Gather", ["table", "index"], ["y"], axis=0)],
+            [value_info("index", [1], TensorProto.INT64)],
+            [value_info("y", [1, 2])],
+            [initializer("table", [[1.0, 2.0], [3.0, 4.0]], np.float32)],
+        )
+        stub = import_model(model)
+
+        # Gathering rows out of a float table says nothing about any shape.
+        self.assertIsNone(stub.tensors["y"].shape_value())
+
     def test_unusable_initializers_carry_no_value(self):
         model = make_model(
             [helper.make_node("MatMul", ["x", "weight"], ["y"])],

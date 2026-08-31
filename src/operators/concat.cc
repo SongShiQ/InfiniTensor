@@ -36,6 +36,26 @@ optional<vector<Shape>> ConcatObj::inferShape(const TensorVec &inputs) {
     return {{dims}};
 }
 
+void ConcatObj::inferShapeValue() {
+    if (!beginShapeValueUpdate()) {
+        return;
+    }
+    // This is where a shape subgraph assembles its dimensions back into one
+    // list, and a list only has the one axis to join along.
+    if (dim != 0) {
+        return;
+    }
+    vector<int64_t> joined;
+    for (const auto &input : inputs) {
+        const auto &value = *input->getShapeValue();
+        joined.insert(joined.end(), value.begin(), value.end());
+    }
+    if (joined.size() != outputs[0]->size()) {
+        return;
+    }
+    outputs[0]->setShapeValue(std::move(joined));
+}
+
 std::string ConcatObj::toString() const {
     std::ostringstream os;
     os << "Concat[" << getGuid() << "]";

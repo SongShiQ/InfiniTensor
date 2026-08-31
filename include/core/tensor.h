@@ -88,6 +88,11 @@ class TensorObj : public TensorBaseObj {
     void clearShapeValue() { shapeValue.reset(); }
     /// @brief The shape value narrowed to `Shape`, checking every element fits.
     Shape getShapeValueAsShape() const;
+    /// @brief Whether this tensor is shaped and typed like a dimension list.
+    ///
+    /// A shape is a list of integers, so anything of a wider rank or of a
+    /// different type holds data rather than dimensions.
+    bool canHoldShapeValue() const;
 
     Shape getStride() const;
     size_t getOffset(const vector<int> &ds) const;
