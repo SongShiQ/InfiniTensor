@@ -247,6 +247,18 @@ optional<vector<Shape>> ShapeObj::inferShape(const TensorVec &inputs) {
     return {{{static_cast<int>(inputs[0]->getRank())}}};
 }
 
+vector<DataType> ShapeObj::inferDataType(const TensorVec &inputs) const {
+    IT_ASSERT(inputs.size() == 1);
+    return {DataType::Int64};
+}
+
+void ShapeObj::inferShapeValue() {
+    // The contents of the output are the dimensions of the input, which are
+    // known as soon as the input has a shape.
+    const auto &dims = inputs[0]->getDims();
+    outputs[0]->setShapeValue(vector<int64_t>(dims.begin(), dims.end()));
+}
+
 std::string ShapeObj::toString() const {
     std::ostringstream os;
     os << type.toString() << "[" << getGuid() << "]("

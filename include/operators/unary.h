@@ -224,6 +224,10 @@ class ShapeObj : public OperatorObj {
     ShapeObj(GraphObj *graph, Tensor input, Tensor output);
     OP_CLONE(ShapeObj);
     optional<vector<Shape>> inferShape(const TensorVec &inputs) override;
+    /// @brief A shape is a list of dimensions, so the output is always Int64
+    /// rather than a value of the input's type.
+    vector<DataType> inferDataType(const TensorVec &inputs) const override;
+    void inferShapeValue() override;
 
     std::string toString() const override;
     int numInputs() const override { return 1; }
