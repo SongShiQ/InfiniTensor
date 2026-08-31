@@ -418,6 +418,48 @@ class TestOnnxStubImport(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "holds data rather than dimensions"):
             import_model(model)
 
+    def test_a_shape_subgraph_feeds_real_work(self):
+        weight = np.arange(12, dtype=np.float32).reshape(4, 3) / 8 - 0.5
+        bias = np.array([0.25, -0.5, 0.125], dtype=np.float32)
+        model = make_model(
+            [
+                # Flatten by a batch size read off the input at run time.
+                helper.make_node("Shape", ["x"], ["s"]),
+                helper.make_node("Gather", ["s", "first"], ["batch"], axis=0),
+                helper.make_node("Unsqueeze", ["batch", "zero"], ["batch_1d"]),
+                helper.make_node("Concat", ["batch_1d", "four"], ["flat"], axis=0),
+                helper.make_node("Reshape", ["x", "flat"], ["rows"]),
+                helper.make_node("MatMul", ["rows", "weight"], ["hidden"]),
+                helper.make_node("Add", ["hidden", "bias"], ["biased"]),
+                helper.make_node("Relu", ["biased"], ["y"]),
+            ],
+            [value_info("x", ["batch", 2, 2])],
+            [value_info("y", ["batch", 3])],
+            [
+                initializer("first", 0, np.int64),
+                initializer("zero", [0], np.int64),
+                initializer("four", [4], np.int64),
+                initializer("weight", weight),
+                initializer("bias", bias),
+            ],
+        )
+        stub = import_model(model)
+
+        # 3 twice running takes the unchanged-shape path, and 5 -> 1 -> 5
+        # shrinks then grows back, where a buffer left over from the larger
+        # shape would still read as the right size.
+        for batch in 3, 3, 5, 1, 5:
+            x = np.arange(batch * 4, dtype=np.float32).reshape(batch, 2, 2) / 4 - 1
+            stub.set_input([[batch, 2, 2]])
+            stub.inputs["x"].copyin_numpy(x)
+
+            stub.run()
+
+            got = np.asarray(stub.outputs["y"].copyout_float(), dtype=np.float32)
+            self.assertEqual(stub.outputs["y"].shape(), [batch, 3])
+            expected = np.maximum(x.reshape(batch, 4) @ weight + bias, 0)
+            np.testing.assert_allclose(got.reshape(batch, 3), expected, atol=1e-6)
+
     def test_data_operators_work_out_no_dimensions(self):
         model = make_model(
             [helper.make_node("Gather", ["table", "index"], ["y"], axis=0)],
