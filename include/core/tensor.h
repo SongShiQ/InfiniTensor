@@ -39,6 +39,9 @@ class TensorObj : public TensorBaseObj {
     // Per-dimension dynamicity. Empty means the tensor never declared which
     // dimensions are dynamic, in which case its shape may be replaced freely.
     DimDescs dimDescs;
+    // Contents of an integer tensor that describes shapes, worked out during
+    // shape inference. See `getShapeValue`.
+    optional<vector<int64_t>> shapeValue;
 
   public:
     TensorObj(Shape shape, DataType dtype, Runtime runtime);
@@ -65,6 +68,26 @@ class TensorObj : public TensorBaseObj {
     /// @brief Throws when `target` violates the declared dimensionality.
     /// Does nothing for tensors that never declared it.
     void validateShapeChange(const Shape &target) const;
+
+    /// @brief Contents of this tensor, when they describe shapes and are known
+    /// without executing anything.
+    ///
+    /// Operators that only rearrange dimensions -- `Shape`, `Gather`,
+    /// `Concat` and the like -- can be worked out during shape inference,
+    /// because their result follows from the shapes of their inputs. Shape
+    /// inference stores that result here, so that a `Reshape` reading its
+    /// target shape from a tensor can find it. Empty when the contents are
+    /// unknown, which is the case for ordinary data.
+    ///
+    /// The value describes the current shapes, so it is rewritten whenever
+    /// shape inference runs again.
+    const optional<vector<int64_t>> &getShapeValue() const {
+        return shapeValue;
+    }
+    void setShapeValue(vector<int64_t> value);
+    void clearShapeValue() { shapeValue.reset(); }
+    /// @brief The shape value narrowed to `Shape`, checking every element fits.
+    Shape getShapeValueAsShape() const;
 
     Shape getStride() const;
     size_t getOffset(const vector<int> &ds) const;

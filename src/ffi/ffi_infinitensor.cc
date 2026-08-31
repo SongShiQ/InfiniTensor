@@ -492,6 +492,8 @@ void init_graph_builder(py::module &m) {
         .def("dim_descs", &TensorObj::getDimDescs, policy::copy)
         .def("is_dim_dynamic", &TensorObj::isDimDynamic, policy::automatic)
         .def("dim_name", &TensorObj::getDimName, policy::move)
+        .def("shape_value", &TensorObj::getShapeValue, policy::copy)
+        .def("set_shape_value", &TensorObj::setShapeValue, policy::automatic)
         .def("set_weight", &TensorObj::setWeight, policy::move)
         .def("set_input", &TensorObj::setInput, policy::move)
         .def("set_output", &TensorObj::setOutput, policy::move)

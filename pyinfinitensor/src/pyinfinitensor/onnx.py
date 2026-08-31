@@ -124,6 +124,11 @@ class OnnxStub:
             tensors[initializer.name] = self.handler.tensor(dims, initializer.data_type)
             data[initializer.name] = initializer
             tensors[initializer.name].set_weight()
+            # A small integer constant may take part in a shape computation, so
+            # hand its contents over before any operator is built: shape
+            # inference runs while the graph is being constructed, and the
+            # initializer data itself is only copied in much later, by `init`.
+            _seed_shape_value(tensors[initializer.name], initializer)
 
         for input in model.graph.input:
             shape_proto = input.type.tensor_type.shape
@@ -1634,6 +1639,25 @@ def _parse_data_fp16(tensor: TensorProto):
 
 def _take_shape_dim(shape: TensorShapeProto) -> List[int]:
     return [(d.dim_value if d.dim_value > 0 else 1) for d in shape.dim]
+
+
+# A tensor taking part in a shape computation holds one entry per dimension, so
+# it is tiny. The bound keeps large integer tensors, which are data rather than
+# shapes, from being copied for nothing.
+_SHAPE_VALUE_MAX_ELEMENTS = 64
+_SHAPE_VALUE_DTYPES = (TensorProto.INT32, TensorProto.INT64)
+
+
+def _seed_shape_value(tensor: backend.Tensor, initializer: TensorProto) -> None:
+    """Give the backend the contents of a small integer constant."""
+    if initializer.data_type not in _SHAPE_VALUE_DTYPES:
+        return
+    if len(initializer.dims) > 1:
+        return
+    values = to_array(initializer).reshape(-1)
+    if values.size > _SHAPE_VALUE_MAX_ELEMENTS:
+        return
+    tensor.set_shape_value([int(v) for v in values])
 
 
 def _take_dim_descs(shape: TensorShapeProto) -> List[backend.DimDesc]:

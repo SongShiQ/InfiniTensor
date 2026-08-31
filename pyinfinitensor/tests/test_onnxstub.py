@@ -207,6 +207,45 @@ class TestOnnxStubImport(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "dim 0 must be positive, but got 0"):
             stub.set_input([[0, 3, 224, 224]])
 
+    def test_shape_operator_reports_int64_dims(self):
+        model = make_model(
+            [helper.make_node("Shape", ["x"], ["s"])],
+            [value_info("x", ["batch", 3, 5])],
+            [value_info("s", [3], TensorProto.INT64)],
+        )
+        stub = import_model(model)
+
+        # ONNX fixes the output of Shape at int64, whatever the input holds.
+        self.assertEqual(stub.tensors["s"].dtype(), TensorProto.INT64)
+        self.assertEqual(stub.tensors["s"].shape_value(), [1, 3, 5])
+
+        stub.set_input([[8, 3, 5]])
+
+        self.assertEqual(stub.tensors["s"].shape_value(), [8, 3, 5])
+
+    def test_small_integer_initializer_carries_its_value(self):
+        model = make_model(
+            [helper.make_node("Gather", ["axes", "index"], ["y"])],
+            [value_info("index", [1], TensorProto.INT64)],
+            [value_info("y", [1], TensorProto.INT64)],
+            [initializer("axes", [0, 2], np.int64)],
+        )
+        stub = import_model(model)
+
+        self.assertEqual(stub.tensors["axes"].shape_value(), [0, 2])
+
+    def test_unusable_initializers_carry_no_value(self):
+        model = make_model(
+            [helper.make_node("MatMul", ["x", "weight"], ["y"])],
+            [value_info("x", [1, 2])],
+            [value_info("y", [1, 2])],
+            [initializer("weight", [[1.0, 0.0], [0.0, 1.0]], np.float32)],
+        )
+        stub = import_model(model)
+
+        # A float tensor cannot describe a shape, and a matrix is the wrong rank.
+        self.assertIsNone(stub.tensors["weight"].shape_value())
+
     def test_initializer_is_restored_after_reallocation(self):
         weight = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
         model = make_model(

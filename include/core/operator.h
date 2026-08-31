@@ -58,6 +58,17 @@ class OperatorObj : public Object {
     virtual optional<vector<Shape>> inferShape(const TensorVec &inputs) = 0;
     virtual vector<DataType> inferDataType(const TensorVec &inputs) const;
     /**
+     * @brief Works out the contents of the outputs, when they describe shapes
+     * and follow from the shapes of the inputs. See `TensorObj::getShapeValue`.
+     *
+     * Called once the outputs exist, and again whenever shapes change. An
+     * operator that cannot work its outputs out leaves them cleared, so that a
+     * result computed for earlier shapes is never mistaken for a current one.
+     * Operators that do not take part in shape computation need not override
+     * this.
+     */
+    virtual void inferShapeValue() {}
+    /**
      * @brief Constructs outputs (if requried) and check whether the operator is
      * valid.
      *

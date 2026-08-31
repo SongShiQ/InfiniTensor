@@ -76,6 +76,8 @@ bool OperatorObj::checkValid(GraphObj *graph) {
                 return false;
         }
     }
+    // The outputs exist by now, so their contents can be worked out.
+    inferShapeValue();
     return true;
 }
 

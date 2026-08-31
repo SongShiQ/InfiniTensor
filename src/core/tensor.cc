@@ -130,6 +130,27 @@ void TensorObj::validateShapeChange(const Shape &target) const {
     }
 }
 
+void TensorObj::setShapeValue(vector<int64_t> value) {
+    IT_ASSERT(dtype == DataType::Int32 || dtype == DataType::Int64,
+              "only an integer tensor can hold a shape value");
+    shapeValue = std::move(value);
+}
+
+Shape TensorObj::getShapeValueAsShape() const {
+    IT_ASSERT(shapeValue.has_value(),
+              "tensor " + std::to_string(guid) + " has no shape value");
+    Shape narrowed;
+    narrowed.reserve(shapeValue->size());
+    for (const auto v : *shapeValue) {
+        IT_ASSERT(v >= std::numeric_limits<ShapeElem>::min() &&
+                      v <= std::numeric_limits<ShapeElem>::max(),
+                  "shape value " + std::to_string(v) + " of tensor " +
+                      std::to_string(guid) + " is out of range");
+        narrowed.push_back(static_cast<ShapeElem>(v));
+    }
+    return narrowed;
+}
+
 void TensorObj::dumpData(std::ofstream &ofs) const {
     IT_ASSERT(data != nullptr);
     if (!runtime->isCpu())

@@ -215,6 +215,11 @@ void GraphObj::shape_infer() {
                 tensor->setShape(newShape);
             }
         }
+        // Shapes are settled for this operator, so a shape value that follows
+        // from them can be worked out now. `ops` is in topological order, so
+        // every consumer is visited after its producers and sees a current
+        // value rather than one left over from earlier shapes.
+        op->inferShapeValue();
     }
 }
 
