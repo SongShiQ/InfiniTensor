@@ -60,6 +60,10 @@ class PoolingObj : public OperatorObj {
     auto getNCHWRS() const { return tuple(n, c, h, w, kh, kw); }
 
   private:
+    /// Read the batch, channel and spatial sizes off `input`. Construction and
+    /// shape inference share this so the two cannot come to disagree.
+    void takeInputDims(const Tensor &input);
+
     vector<int> getWorkloadVector() const override;
     vector<int> getOpAttrVector() const override;
 };

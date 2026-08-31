@@ -2,20 +2,29 @@
 
 namespace infini {
 
+void PoolingObj::takeInputDims(const Tensor &input) {
+    n = input->getDims().at(0);
+    c = input->getDims().at(1);
+    h = input->getRank() == 3 ? 1 : input->getDims().at(2);
+    w = input->getRank() == 3 ? input->getDims().at(2) : input->getDims().at(3);
+}
+
 PoolingObj::PoolingObj(GraphObj *graph, OpType optype, Tensor input,
                        Tensor output, int kh, int kw, int dh, int dw, int ph,
                        int pw, int sh, int sw, int ceilMode)
     : OperatorObj(optype, {input}, {output}), kh(kh), kw(kw), dh(dh), dw(dw),
-      ph(ph), pw(pw), sh(sh), sw(sw), ceilMode(ceilMode),
-      n(input->getDims().at(0)), c(input->getDims().at(1)),
-      h(input->getRank() == 3 ? 1 : input->getDims().at(2)),
-      w(input->getRank() == 3 ? input->getDims().at(2)
-                              : input->getDims().at(3)) {
+      ph(ph), pw(pw), sh(sh), sw(sw), ceilMode(ceilMode) {
+    takeInputDims(input);
     IT_ASSERT(checkValid(graph));
 }
 
 optional<vector<Shape>> PoolingObj::inferShape(const TensorVec &inputs) {
     const auto &input = inputs[0];
+    // The spatial size is read afresh every time rather than kept from
+    // construction: a dynamic height or width is only a placeholder until a
+    // real shape arrives, and the kernel strides over the input by these same
+    // numbers, so a stale one is read as well as reported.
+    takeInputDims(input);
     int oh, ow;
     if (ceilMode) {
         oh = ceil(((float)(h + 2 * ph - dh * (kh - 1) - 1)) / sh + 1);
