@@ -1,6 +1,7 @@
 #include "operators/element_wise.h"
 #include "core/kernel.h"
 #include "utils/operator_utils.h"
+#include <cmath>
 #include <type_traits>
 
 namespace infini {
@@ -25,6 +26,13 @@ class NativeElementWise : public CpuKernelWithoutConfig {
             IT_ASSERT(val1 != 0, "element-wise division by zero");
         }
         return (T)(val0 / val1);
+    }
+
+    template <typename T> static T powCompute(T val0, T val1) {
+        // std::pow works in floating point, which is exact for the whole
+        // numbers a shape computation deals in and is what the operator means
+        // for the floating-point case anyway.
+        return (T)std::pow(val0, val1);
     }
 
     template <typename T> static T equalCompute(T val0, T val1) {
@@ -91,6 +99,9 @@ class NativeElementWise : public CpuKernelWithoutConfig {
         case OpType::Div:
             _doCompute = divCompute<T>;
             break;
+        case OpType::Pow:
+            _doCompute = powCompute<T>;
+            break;
         case OpType::Equal:
             _doCompute = equalCompute<T>;
             break;
@@ -144,6 +155,7 @@ REGISTER_KERNEL(Device::CPU, OpType::Add, NativeElementWise, "addNaive_CPU");
 REGISTER_KERNEL(Device::CPU, OpType::Sub, NativeElementWise, "subNaive_CPU");
 REGISTER_KERNEL(Device::CPU, OpType::Mul, NativeElementWise, "mulNaive_CPU");
 REGISTER_KERNEL(Device::CPU, OpType::Div, NativeElementWise, "divNaive_CPU");
+REGISTER_KERNEL(Device::CPU, OpType::Pow, NativeElementWise, "powNaive_CPU");
 REGISTER_KERNEL(Device::CPU, OpType::Equal, NativeElementWise,
                 "equalNaive_CPU");
 REGISTER_KERNEL(Device::CPU, OpType::GreaterOrEqual, NativeElementWise,
