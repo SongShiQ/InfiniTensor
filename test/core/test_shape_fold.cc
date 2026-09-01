@@ -11,11 +11,22 @@
 namespace infini {
 
 namespace {
+/// Data an initializer would arrive with, alongside the shape value the pass
+/// reads. A constant the fold leaves in place is read by a kernel, which reads
+/// data and not the shape value, so leaving the data out only ever looked right
+/// where the pool happened to hold the wanted number already.
+void fillFromShapeValue(const Tensor &t) {
+    t->dataMalloc();
+    t->copyin(*t->getShapeValue());
+    t->setWeight();
+}
+
 /// A rank-one integer constant, as an initializer of a shape subgraph is.
 Tensor constantOf(const Graph &g, const vector<int64_t> &values) {
     auto t =
         g->addTensor(Shape{static_cast<int>(values.size())}, DataType::Int64);
     t->setShapeValue(values);
+    fillFromShapeValue(t);
     return t;
 }
 
@@ -25,6 +36,7 @@ Tensor constantOf(const Graph &g, const vector<int64_t> &values) {
 Tensor scalarOf(const Graph &g, int64_t value) {
     auto t = g->addTensor(Shape{}, DataType::Int64);
     t->setShapeValue(vector<int64_t>{value});
+    fillFromShapeValue(t);
     return t;
 }
 } // namespace
@@ -152,6 +164,78 @@ TEST(ShapeFold, FoldedTensorCarriesItsDataForALiveConsumer) {
     runtime->run(g);
     EXPECT_EQ(g->cloneTensor(joined->getOutput())->copyout<int64_t>(),
               (vector<int64_t>{1, 8}));
+}
+
+/// A folded constant has to outlive every allocation that follows, because
+/// nothing runs to fill it again. Allocation plans storage for a tensor with no
+/// producer and hands the offset back once the last reader has run, which is
+/// right for something refilled from outside each run and wrong for this.
+///
+/// Whether the offset is then reused at all decides whether the fault shows, so
+/// the graph is built to leave no choice: folding the settled branch leaves one
+/// constant of eight elements, and the operator planned after the join asks for
+/// exactly the sixty-four bytes the join has just released. Every other hole
+/// here is smaller, so any allocator must take that one.
+TEST(ShapeFold, FoldedConstantKeepsItsStorage) {
+    auto runtime = NativeCpuRuntimeObj::getInstance();
+    Graph g = make_ref<GraphObj>(runtime);
+
+    auto input = g->addTensor(Shape{1, 16}, DataType::Float32);
+    input->setDimDescs({{true, "batch"}, {false, ""}});
+    auto shape = g->addOp<ShapeObj>(input, nullptr);
+    auto batch =
+        g->addOp<GatherObj>(shape->getOutput(), scalarOf(g, 0), nullptr, 0);
+    auto width =
+        g->addOp<GatherObj>(shape->getOutput(), scalarOf(g, 1), nullptr, 0);
+
+    // Eight copies of the settled width, so that what folding leaves is a
+    // constant large enough to be the only hole worth reusing.
+    TensorVec settledParts;
+    for (int i = 0; i < 8; ++i) {
+        settledParts.push_back(
+            g->addOp<UnsqueezeObj>(width->getOutput(), nullptr, Shape{0})
+                ->getOutput());
+    }
+    auto settledList = g->addOp<ConcatObj>(settledParts, nullptr, 0);
+    auto liveOne =
+        g->addOp<UnsqueezeObj>(batch->getOutput(), nullptr, Shape{0});
+    auto joined = g->addOp<ConcatObj>(
+        TensorVec{liveOne->getOutput(), settledList->getOutput()}, nullptr, 0);
+
+    // Added last so that it is planned after the join has released the
+    // constant, and shaped so that it asks for just as much.
+    auto big = g->addOp<ReluObj>(input, nullptr);
+    ASSERT_EQ(big->getOutput()->getBytes(),
+              settledList->getOutput()->getBytes());
+
+    // The settled gather, its eight unsqueezes and their join.
+    ASSERT_EQ(g->foldFixedShapeSubgraph(), 10u);
+    ASSERT_TRUE(g->checkValid());
+
+    const vector<int64_t> expected{1, 16, 16, 16, 16, 16, 16, 16, 16};
+    g->dataMalloc();
+    runtime->run(g);
+    EXPECT_EQ(g->cloneTensor(joined->getOutput())->copyout<int64_t>(),
+              expected);
+
+    // The run above is what hands the constant's storage to another tensor, so
+    // it is the second run that reads what became of it.
+    runtime->run(g);
+    EXPECT_EQ(g->cloneTensor(joined->getOutput())->copyout<int64_t>(),
+              expected);
+
+    // A new batch size replans every offset, which the folded width must also
+    // survive, twice over for the same reason.
+    input->setShape({4, 16});
+    g->shape_infer();
+    g->dataMalloc();
+    const vector<int64_t> reshaped{4, 16, 16, 16, 16, 16, 16, 16, 16};
+    runtime->run(g);
+    EXPECT_EQ(g->cloneTensor(joined->getOutput())->copyout<int64_t>(),
+              reshaped);
+    runtime->run(g);
+    EXPECT_EQ(g->cloneTensor(joined->getOutput())->copyout<int64_t>(),
+              reshaped);
 }
 
 /// A settled result asked for as an output of the graph keeps what produces it.

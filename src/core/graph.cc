@@ -229,6 +229,20 @@ bool describesShapes(const Operator &op) {
 /// runs to fill this tensor once its producer is gone, so it is filled here.
 void writeShapeValueAsData(const Tensor &tensor) {
     const auto &value = *tensor->getShapeValue();
+    // Nothing runs to fill this tensor once its producer is gone, so it has to
+    // keep what is written here for good. Storage from the pool does not last
+    // that long: a tensor with no producer is given an offset and a count of
+    // its readers, and the offset is handed out again once the last of them has
+    // run. So a plain intermediate is given storage of its own and marked a
+    // weight, which is what allocation calls memory it must leave alone.
+    //
+    // A tensor the graph takes in or gives back already has storage that is
+    // never reused, and marking one a weight would take away the very thing
+    // that makes it an input or an output, so those keep what they have.
+    const bool needsStorageOfItsOwn = tensor->isOthers();
+    if (needsStorageOfItsOwn) {
+        tensor->freeData();
+    }
     if (!tensor->hasData()) {
         tensor->dataMalloc();
     }
@@ -239,6 +253,9 @@ void writeShapeValueAsData(const Tensor &tensor) {
         // the other one.
         IT_ASSERT(tensor->getDType() == DataType::Int32);
         tensor->copyin(vector<int32_t>(value.begin(), value.end()));
+    }
+    if (needsStorageOfItsOwn) {
+        tensor->setWeight();
     }
 }
 } // namespace
