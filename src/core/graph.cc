@@ -200,6 +200,7 @@ bool describesShapes(const Operator &op) {
     case OpType::Gather:
     case OpType::Unsqueeze:
     case OpType::Squeeze:
+    case OpType::Slice:
     case OpType::Concat:
     case OpType::Identity:
     // The arithmetic a shape computation is built from. Each of these is a

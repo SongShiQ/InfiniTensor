@@ -34,6 +34,7 @@ class SliceObj : public OperatorObj {
     OP_CLONE(SliceObj);
 
     optional<vector<Shape>> inferShape(const TensorVec &inputs) override;
+    void inferShapeValue() override;
     std::string toString() const override;
     inline int numInputs() const override { return 1; }
     inline int numOutputs() const override { return 1; }

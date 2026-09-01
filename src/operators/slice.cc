@@ -72,6 +72,42 @@ optional<vector<Shape>> SliceObj::inferShape(const TensorVec &inputs) {
     return {{ans}};
 }
 
+void SliceObj::inferShapeValue() {
+    if (!beginShapeValueUpdate()) {
+        return;
+    }
+    // A shape is a list, and taking part of a list is the one case worth
+    // handling: a model that reshapes to "everything but the last dimension,
+    // then whatever is left" writes exactly this, and a simplifier will produce
+    // it even where the model did not. Slicing anything of higher rank is a
+    // slice of data rather than of dimensions, and nothing here can say what
+    // the result would be.
+    if (inputs[0]->getRank() != 1 || axes.size() != 1) {
+        return;
+    }
+    const auto &value = *inputs[0]->getShapeValue();
+    const auto &range = axes[0];
+    // Ends past the end were already clamped to the length when this operator
+    // was built, and negative starts were resolved against it. What is left is
+    // to walk the range, which a negative step walks backwards.
+    vector<int64_t> picked;
+    vector<bool> fixed;
+    for (int i = range.start; range.step > 0 ? i < range.end : i > range.end;
+         i += range.step) {
+        if (i < 0 || i >= static_cast<int>(value.size())) {
+            return;
+        }
+        picked.push_back(value[i]);
+        fixed.push_back(inputs[0]->isShapeValueFixed(i));
+    }
+    // Whatever the range worked out to has to be what the output was shaped
+    // for; anything else means the two disagree and the value is not usable.
+    if (picked.size() != outputs[0]->size()) {
+        return;
+    }
+    outputs[0]->setShapeValue(std::move(picked), std::move(fixed));
+}
+
 std::string SliceObj::toString() const {
     std::ostringstream os;
     os << "Slice[" << getGuid() << "][";

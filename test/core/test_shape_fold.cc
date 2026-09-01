@@ -4,6 +4,7 @@
 #include "operators/element_wise.h"
 #include "operators/gather.h"
 #include "operators/reshape.h"
+#include "operators/slice.h"
 #include "operators/unary.h"
 #include "operators/unsqueeze.h"
 #include "test.h"
@@ -385,6 +386,113 @@ TEST(ShapeFold, SettledArithmeticFolds) {
     EXPECT_EQ(g->getOperators().size(), 1u);
     EXPECT_TRUE(g->checkValid());
     EXPECT_EQ(perHead->getOutput()->copyout<int64_t>(), (vector<int64_t>{8}));
+}
+
+/// Taking part of a shape carries the elements that were taken, each as settled
+/// as it was. This is what a model writes for "everything but the last
+/// dimension", and a simplifier produces it even where the model did not.
+TEST(ShapeFold, SliceCarriesThePartItTook) {
+    auto runtime = NativeCpuRuntimeObj::getInstance();
+    Graph g = make_ref<GraphObj>(runtime);
+
+    auto input = g->addTensor(Shape{1, 16, 8}, DataType::Float32);
+    input->setDimDescs({{true, "batch"}, {false, ""}, {false, ""}});
+    auto shape = g->addOp<ShapeObj>(input, nullptr);
+    // The leading two dimensions: one that moves and one that does not.
+    auto head = g->addOp<SliceObj>(shape->getOutput(), nullptr, vector<int>{0},
+                                   vector<int>{2}, vector<int>{0},
+                                   std::nullopt);
+
+    const auto &value = head->getOutput()->getShapeValue();
+    ASSERT_TRUE(value.has_value());
+    EXPECT_EQ(*value, (vector<int64_t>{1, 16}));
+    EXPECT_FALSE(head->getOutput()->isShapeValueFixed(0));
+    EXPECT_TRUE(head->getOutput()->isShapeValueFixed(1));
+    EXPECT_FALSE(head->getOutput()->isShapeValueWhollyFixed());
+}
+
+/// A slice of settled elements alone is settled, and so folds away with the
+/// chain that produced it.
+TEST(ShapeFold, SettledSliceFolds) {
+    auto runtime = NativeCpuRuntimeObj::getInstance();
+    Graph g = make_ref<GraphObj>(runtime);
+
+    auto input = g->addTensor(Shape{1, 16, 8}, DataType::Float32);
+    input->setDimDescs({{true, "batch"}, {false, ""}, {false, ""}});
+    auto shape = g->addOp<ShapeObj>(input, nullptr);
+    // The trailing two, both declared fixed.
+    auto tail = g->addOp<SliceObj>(shape->getOutput(), nullptr, vector<int>{1},
+                                   vector<int>{3}, vector<int>{0},
+                                   std::nullopt);
+    EXPECT_TRUE(tail->getOutput()->isShapeValueWhollyFixed());
+    EXPECT_EQ(*tail->getOutput()->getShapeValue(), (vector<int64_t>{16, 8}));
+
+    auto live = g->addOp<ReluObj>(input, nullptr);
+    EXPECT_EQ(g->foldFixedShapeSubgraph(), 2u);
+    EXPECT_EQ(live->getOutput()->getDims(), (Shape{1, 16, 8}));
+}
+
+/// A step walks the range, so the elements taken are the ones it lands on and
+/// the fixedness of each follows the element it came from.
+TEST(ShapeFold, SteppedSliceTakesWhatItLandsOn) {
+    auto runtime = NativeCpuRuntimeObj::getInstance();
+    Graph g = make_ref<GraphObj>(runtime);
+
+    auto input = g->addTensor(Shape{2, 4, 6, 8}, DataType::Float32);
+    input->setDimDescs(
+        {{false, ""}, {true, "height"}, {false, ""}, {true, "width"}});
+    auto shape = g->addOp<ShapeObj>(input, nullptr);
+    auto every2 = g->addOp<SliceObj>(shape->getOutput(), nullptr,
+                                     vector<int>{0}, vector<int>{4},
+                                     vector<int>{0}, vector<int>{2});
+
+    const auto &value = every2->getOutput()->getShapeValue();
+    ASSERT_TRUE(value.has_value());
+    EXPECT_EQ(*value, (vector<int64_t>{2, 6}));
+    EXPECT_TRUE(every2->getOutput()->isShapeValueFixed(0));
+    EXPECT_TRUE(every2->getOutput()->isShapeValueFixed(1));
+}
+
+/// Slicing anything of higher rank is a slice of data rather than of
+/// dimensions, and nothing here can say what the result would hold. Such a
+/// tensor cannot carry a shape value to begin with -- only a rank one integer
+/// can -- so the result carries none either, and the fold leaves it alone.
+TEST(ShapeFold, SliceOfDataYieldsNoValue) {
+    auto runtime = NativeCpuRuntimeObj::getInstance();
+    Graph g = make_ref<GraphObj>(runtime);
+
+    auto table = g->addTensor(Shape{4, 4}, DataType::Int64);
+    EXPECT_FALSE(table->canHoldShapeValue());
+    auto part = g->addOp<SliceObj>(table, nullptr, vector<int>{0},
+                                   vector<int>{2}, vector<int>{0},
+                                   std::nullopt);
+    EXPECT_FALSE(part->getOutput()->getShapeValue().has_value());
+    EXPECT_EQ(g->foldFixedShapeSubgraph(), 0u);
+}
+
+/// A `Reshape` may read its target through a slice, which is the shape the
+/// chain a simplifier leaves behind has: the shape of a tensor, its tail
+/// dropped, joined with a constant.
+TEST(ShapeFold, ReshapeReadsATargetThroughASlice) {
+    auto runtime = NativeCpuRuntimeObj::getInstance();
+    Graph g = make_ref<GraphObj>(runtime);
+
+    auto input = g->addTensor(Shape{2, 3, 4}, DataType::Float32);
+    input->setDimDescs({{true, "batch"}, {true, "seq"}, {false, ""}});
+    auto shape = g->addOp<ShapeObj>(input, nullptr);
+    auto head = g->addOp<SliceObj>(shape->getOutput(), nullptr, vector<int>{0},
+                                   vector<int>{2}, vector<int>{0},
+                                   std::nullopt);
+    auto target = g->addOp<ConcatObj>(
+        TensorVec{head->getOutput(), constantOf(g, {4})}, nullptr, 0);
+    auto reshaped = g->addOp<ReshapeObj>(input, target->getOutput(), nullptr);
+    EXPECT_EQ(reshaped->getOutput()->getDims(), (Shape{2, 3, 4}));
+
+    // And it follows the input, which is the whole point of reading the target
+    // at run time rather than settling it when the graph was built.
+    input->setShape({5, 7, 4});
+    g->shape_infer();
+    EXPECT_EQ(reshaped->getOutput()->getDims(), (Shape{5, 7, 4}));
 }
 
 } // namespace infini
