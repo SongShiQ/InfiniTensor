@@ -81,6 +81,90 @@ def _only_reshape(stub):
     return reshapes[0]
 
 
+def _settled_chain_model():
+    """A shape subgraph whose every element is settled when the graph is built.
+
+    `x` moves only in its first dimension, so reading the second one off it
+    gives a number no legal shape can change. Joined with a constant tail, the
+    whole chain is known ahead of any run.
+    """
+    return make_model(
+        [
+            helper.make_node("Shape", ["x"], ["s"]),
+            helper.make_node("Gather", ["s", "middle"], ["g"], axis=0),
+            helper.make_node("Unsqueeze", ["g", "zero"], ["u"]),
+            helper.make_node("Concat", ["u", "tail"], ["c"], axis=0),
+        ],
+        [value_info("x", ["batch", 3, 5])],
+        [value_info("c", [2], TensorProto.INT64)],
+        [
+            initializer("middle", 1, np.int64),
+            initializer("zero", [0], np.int64),
+            initializer("tail", [7], np.int64),
+        ],
+    )
+
+
+def _moving_chain_model():
+    """The same chain reading the one dimension that does move."""
+    return make_model(
+        [
+            helper.make_node("Shape", ["x"], ["s"]),
+            helper.make_node("Gather", ["s", "first"], ["g"], axis=0),
+            helper.make_node("Unsqueeze", ["g", "zero"], ["u"]),
+            helper.make_node("Concat", ["u", "tail"], ["c"], axis=0),
+        ],
+        [value_info("x", ["batch", 3, 5])],
+        [value_info("c", [2], TensorProto.INT64)],
+        [
+            initializer("first", 0, np.int64),
+            initializer("zero", [0], np.int64),
+            initializer("tail", [7], np.int64),
+        ],
+    )
+
+
+def _flatten_chain_model(axis_from_constant=False):
+    """A model flattening every dimension of `x` but the last.
+
+    The last dimension is fixed, so that branch of the shape subgraph settles
+    when the graph is built, while `-1` leaves the moving part for Reshape to
+    work out. This is what an exporter emits for a flatten before a linear
+    layer. The axis reaches the graph either as an initializer or as a
+    `Constant`, which an exporter picks between freely.
+    """
+    axis = np.asarray(2, dtype=np.int64)
+    nodes = [
+        helper.make_node("Shape", ["x"], ["s"]),
+        helper.make_node("Gather", ["s", "last"], ["g"], axis=0),
+        helper.make_node("Unsqueeze", ["g", "zero"], ["u"]),
+        helper.make_node("Concat", ["rest", "u"], ["target"], axis=0),
+        helper.make_node("Reshape", ["x", "target"], ["y"]),
+    ]
+    initializers = [
+        initializer("zero", [0], np.int64),
+        initializer("rest", [-1], np.int64),
+    ]
+    if axis_from_constant:
+        nodes.insert(
+            0,
+            helper.make_node(
+                "Constant",
+                [],
+                ["last"],
+                value=numpy_helper.from_array(axis, name="last"),
+            ),
+        )
+    else:
+        initializers.append(initializer("last", axis))
+    return make_model(
+        nodes,
+        [value_info("x", ["batch", 3, 5])],
+        [value_info("y", ["flat", 5])],
+        initializers,
+    )
+
+
 class TestOnnxStubImport(unittest.TestCase):
     def test_get_perf_time_returns_backend_value(self):
         stub = OnnxStub.__new__(OnnxStub)
@@ -935,6 +1019,96 @@ class TestOnnxStubCuda(unittest.TestCase):
                         2, 2
                     )
                     np.testing.assert_allclose(actual, x @ weight, rtol=1e-5, atol=1e-6)
+
+
+class TestShapeSubgraphFold(unittest.TestCase):
+    def test_settled_chain_folds_away(self):
+        stub = import_model(_settled_chain_model())
+        self.assertEqual(stub.handler.operator_count(), 4)
+
+        dropped = stub.fold_shape_subgraph()
+
+        # The gather and the unsqueeze held a settled result, and the `Shape`
+        # feeding them was left with nobody to read it. The `Concat` is what
+        # the graph was asked for, so it stays and reads the constants.
+        self.assertEqual(dropped, 3)
+        self.assertEqual(stub.handler.operator_count(), 1)
+        stub.run()
+        self.assertEqual(stub.outputs["c"].copyout_int64(), [3, 7])
+
+    def test_moving_chain_is_left_alone(self):
+        stub = import_model(_moving_chain_model())
+
+        self.assertEqual(stub.fold_shape_subgraph(), 0)
+        self.assertEqual(stub.handler.operator_count(), 4)
+
+        # Still a live computation, so it follows the input as it did before.
+        self.assertEqual(stub.tensors["c"].shape_value(), [1, 7])
+        stub.set_input([[8, 3, 5]])
+        self.assertEqual(stub.tensors["c"].shape_value(), [8, 7])
+
+    def test_folding_reports_the_tensors_it_let_go_of(self):
+        stub = import_model(_settled_chain_model())
+        gone_before = set(stub.handler.folded_away_tensors())
+
+        stub.fold_shape_subgraph()
+
+        gone = set(stub.handler.folded_away_tensors())
+        self.assertEqual(gone_before, set())
+        # The intermediates of the chain, and the constants that fed an
+        # operator, are no longer the graph's to account for. `zero` is not
+        # among them: the importer reads Unsqueeze axes into the operator
+        # itself, so that tensor never reached the graph's wiring and the fold
+        # has nothing to say about it.
+        self.assertEqual(
+            {name for name, t in stub.tensors.items() if t.fuid() in gone},
+            {"s", "g", "middle"},
+        )
+        # `u` and `tail` are still read by the `Concat` that stayed, and `zero`
+        # never reached the graph's wiring at all: the importer reads Unsqueeze
+        # axes into the operator itself.
+        self.assertEqual(set(stub._initializer_by_name), {"zero", "tail"})
+
+    def test_folded_target_still_reshapes_across_shapes(self):
+        stub = import_model(_flatten_chain_model())
+
+        self.assertEqual(stub.fold_shape_subgraph(), 4)
+        # Reshape reads the target through a kernel, so the fold has to leave
+        # real numbers behind rather than only metadata.
+        self.assertEqual(stub.handler.operator_count(), 1)
+        self.assertEqual(stub.tensors["target"].copyout_int64(), [-1, 5])
+
+        # A shape the graph has already run has to give the same answer the
+        # second time, which is the one way a stale cached value would show.
+        for batch in 4, 7, 4:
+            dims = [batch, 3, 5]
+            stub.set_input([dims])
+            x = np.arange(np.prod(dims), dtype=np.float32).reshape(dims)
+            stub.inputs["x"].copyin_numpy(x)
+
+            stub.run()
+
+            self.assertEqual(stub.outputs["y"].shape(), [batch * 3, 5])
+            actual = np.asarray(stub.outputs["y"].copyout_float()).reshape(batch * 3, 5)
+            np.testing.assert_array_equal(actual, x.reshape(batch * 3, 5))
+
+    def test_axis_from_a_constant_node_folds_the_same_way(self):
+        stub = import_model(_flatten_chain_model(axis_from_constant=True))
+
+        # An axis an exporter emitted as a `Constant` carries its value just as
+        # an initializer does, so the same part of the chain settles.
+        self.assertEqual(stub.tensors["last"].shape_value(), [2])
+        self.assertEqual(stub.fold_shape_subgraph(), 4)
+        self.assertEqual(stub.tensors["target"].copyout_int64(), [-1, 5])
+
+    def test_optimize_folds_the_chain(self):
+        stub = import_model(_settled_chain_model())
+
+        stub.optimize()
+
+        self.assertEqual(stub.handler.operator_count(), 1)
+        stub.run()
+        self.assertEqual(stub.outputs["c"].copyout_int64(), [3, 7])
 
 
 if __name__ == "__main__":

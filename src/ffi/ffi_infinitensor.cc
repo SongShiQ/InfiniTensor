@@ -661,6 +661,10 @@ void init_graph_builder(py::module &m) {
         .def("shape_infer", &Handler::shape_infer, policy::automatic)
         .def("change_shape", &Handler::change_shape, policy::automatic)
         .def("set_dim_descs", &Handler::set_dim_descs, policy::automatic)
+        .def("fold_fixed_shape_subgraph", &Handler::fold_fixed_shape_subgraph,
+             policy::automatic)
+        .def("folded_away_tensors", &Handler::folded_away_tensors, policy::copy)
+        .def("operator_count", &Handler::operator_count, policy::automatic)
         .def("getDims", &Handler::getDims, policy::automatic)
         .def("get_perf_time", &Handler::get_perf_time, policy::automatic);
 }

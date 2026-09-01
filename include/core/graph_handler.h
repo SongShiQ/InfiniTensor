@@ -132,6 +132,16 @@ class GraphHandlerObj {
 
     inline void optimize() { g->optimize(); }
 
+    inline size_t fold_fixed_shape_subgraph() {
+        return g->foldFixedShapeSubgraph();
+    }
+
+    inline const vector<UidBaseType> &folded_away_tensors() const {
+        return g->getFoldedAwayTensors();
+    }
+
+    inline size_t operator_count() const { return g->getOperators().size(); }
+
     inline void shape_infer() { g->shape_infer(); }
 
     void change_shape(const vector<int> &shape, int tensorId);

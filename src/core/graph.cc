@@ -182,12 +182,192 @@ bool GraphObj::topo_sort() {
 }
 
 void GraphObj::optimize() {
+    foldFixedShapeSubgraph();
     for (auto &op : ops) {
         switch (op->getOpType().underlying()) {
         default:
             break;
         }
     }
+}
+
+namespace {
+/// Whether `op` only reports, selects or joins dimensions, so that its result
+/// is worked out during shape inference rather than by running anything.
+bool describesShapes(const Operator &op) {
+    switch (op->getOpType().underlying()) {
+    case OpType::Shape:
+    case OpType::Gather:
+    case OpType::Unsqueeze:
+    case OpType::Squeeze:
+    case OpType::Concat:
+    case OpType::Identity:
+    // The arithmetic a shape computation is built from. Each of these is a
+    // pure function of its inputs, so one whose result nobody reads has no
+    // effect left to lose.
+    case OpType::Add:
+    case OpType::Sub:
+    case OpType::Mul:
+    case OpType::Div:
+    case OpType::Max:
+    case OpType::Min:
+    case OpType::FloorDiv:
+    case OpType::FloorMod:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// Write a settled shape value into the tensor itself.
+///
+/// Shape inference leaves the result beside the tensor rather than in it,
+/// which is enough for a `Reshape` -- that reads the value while shapes are
+/// worked out. It is not enough for an operator that still runs: a `Concat`
+/// joining a settled dimension with one that still moves reads its inputs
+/// through a kernel, and would find whatever the memory last held. Nothing
+/// runs to fill this tensor once its producer is gone, so it is filled here.
+void writeShapeValueAsData(const Tensor &tensor) {
+    const auto &value = *tensor->getShapeValue();
+    if (!tensor->hasData()) {
+        tensor->dataMalloc();
+    }
+    if (tensor->getDType() == DataType::Int64) {
+        tensor->copyin(vector<int64_t>(value.begin(), value.end()));
+    } else {
+        // `canHoldShapeValue` allows only the two integer types, so this is
+        // the other one.
+        IT_ASSERT(tensor->getDType() == DataType::Int32);
+        tensor->copyin(vector<int32_t>(value.begin(), value.end()));
+    }
+}
+} // namespace
+
+size_t GraphObj::foldFixedShapeSubgraph() {
+    foldedAwayTensors.clear();
+
+    OpVec foldable;
+    for (const auto &op : ops) {
+        if (!describesShapes(op)) {
+            continue;
+        }
+        // Every output must already hold its final contents. A `Concat`
+        // joining a settled dimension with one that still moves is not
+        // foldable, and reports itself as such by leaving that element
+        // unfixed.
+        const auto &outputs = op->getOutputs();
+        if (outputs.empty()) {
+            continue;
+        }
+        if (!std::all_of(outputs.begin(), outputs.end(), [](const Tensor &t) {
+                return t->isShapeValueWhollyFixed();
+            })) {
+            continue;
+        }
+        // Something the graph was asked to produce has to keep whatever
+        // produces it. The graph promises that every tensor it holds is either
+        // produced by an operator or given from outside, and an output left
+        // with neither would break that promise even though the numbers in it
+        // are right. What feeds such an operator still folds, so a settled
+        // chain collapses to the one operator at its end.
+        if (std::any_of(outputs.begin(), outputs.end(),
+                        [](const Tensor &t) { return t->isOutput(); })) {
+            continue;
+        }
+        foldable.emplace_back(op);
+    }
+
+    // A tensor the graph can no longer reach: nothing produces it and nothing
+    // reads it. Such a tensor breaks the graph invariant, so it is let go of --
+    // unless it is one of the graph's own inputs or outputs, which stay
+    // whatever happens around them. Any reference held elsewhere keeps the
+    // value readable; it is only the graph that lets go.
+    const auto releaseIfUnreachable = [this](const Tensor &tensor) {
+        if (!tensor->getTargets().empty() || tensor->getSource()) {
+            return;
+        }
+        if (tensor->isInput() || tensor->isOutput()) {
+            return;
+        }
+        foldedAwayTensors.push_back(tensor->getFuid());
+        removeTensor(tensor);
+    };
+
+    // Taking an operator out of the graph, having settled what happens to what
+    // it produced. Its inputs lose a reader, which may leave whatever computed
+    // them working for nobody, so those producers come back as candidates.
+    OpVec pending;
+    const auto detach = [&](const Operator &op) {
+        const auto inputs = op->getInputs();
+        const auto outputs = op->getOutputs();
+        for (const auto &output : outputs) {
+            output->setSource(Operator{});
+            // The operator is about to go, so no consumer may still name it as
+            // what comes before them.
+            for (const auto &consumer : output->getTargets()) {
+                consumer->removePredecessors(op);
+            }
+        }
+        for (const auto &input : inputs) {
+            deleteConnection(input, op);
+        }
+        removeOperator(op);
+        for (const auto &output : outputs) {
+            releaseIfUnreachable(output);
+        }
+        for (const auto &input : inputs) {
+            if (input->getTargets().empty()) {
+                if (const auto producer = input->getSource()) {
+                    pending.emplace_back(producer);
+                }
+            }
+            releaseIfUnreachable(input);
+        }
+    };
+
+    size_t dropped = 0;
+    for (const auto &op : foldable) {
+        // The output keeps its place in the graph and merely loses its
+        // producer. Nothing downstream is rewired, so a consumer cannot be
+        // missed, and a reference held elsewhere stays valid. A result nobody
+        // reads is not worth a constant; asked for as an output of the graph it
+        // is read by whoever asked, so it gets one.
+        for (const auto &output : op->getOutputs()) {
+            if (!output->getTargets().empty() || output->isInput() ||
+                output->isOutput()) {
+                writeShapeValueAsData(output);
+            }
+        }
+        detach(op);
+        ++dropped;
+    }
+
+    // Whatever the folds above left with nothing to feed. An operator only
+    // goes if everything it produces is unread -- one consumer left anywhere
+    // means it is still doing work -- and only if it is one of the operators
+    // this pass understands, so that nothing with an effect of its own is
+    // dropped for looking unused.
+    while (!pending.empty()) {
+        const auto op = pending.back();
+        pending.pop_back();
+        if (std::find(ops.begin(), ops.end(), op) == ops.end()) {
+            continue;
+        }
+        if (!describesShapes(op)) {
+            continue;
+        }
+        const auto &outputs = op->getOutputs();
+        if (!std::all_of(outputs.begin(), outputs.end(), [](const Tensor &t) {
+                return t->getTargets().empty() && !t->isInput() &&
+                       !t->isOutput();
+            })) {
+            continue;
+        }
+        detach(op);
+        ++dropped;
+    }
+
+    return dropped;
 }
 
 Tensor GraphObj::getTensor(int fuid) const {

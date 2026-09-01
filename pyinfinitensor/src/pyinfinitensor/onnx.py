@@ -1535,6 +1535,36 @@ class OnnxStub:
 
     def optimize(self) -> None:
         self.handler.optimize()
+        self._forget_folded_tensors()
+
+    def fold_shape_subgraph(self) -> int:
+        """Replace the settled part of the shape subgraph with constants.
+
+        A dimension the model declared fixed cannot change, so whatever follows
+        only from such dimensions is already its final value and need not be
+        worked out again on every inference. Returns how many operators this
+        removed. Dimensions the model declared dynamic are left alone, along
+        with everything reading them.
+        """
+        dropped = self.handler.fold_fixed_shape_subgraph()
+        self._forget_folded_tensors()
+        return dropped
+
+    def _forget_folded_tensors(self) -> None:
+        """Drop what the graph no longer holds.
+
+        A constant that took part only in a settled shape computation is gone
+        from the graph along with the operators that read it. Copying its
+        contents in again would write into memory the graph has stopped
+        accounting for, so it is taken off the list of things to copy.
+        """
+        gone = set(self.handler.folded_away_tensors())
+        if not gone:
+            return
+        for name in [n for n, t in self.tensors.items() if t.fuid() in gone]:
+            self._initializer_by_name.pop(name, None)
+        for fuid in gone:
+            self.initializer.pop(fuid, None)
 
     def clone_KV(self, tensor: backend.Tensor) -> backend.Tensor:
         return self.handler.clone_KV(tensor)

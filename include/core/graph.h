@@ -91,6 +91,24 @@ class GraphObj : public Object {
 
     void optimize();
 
+    /// @brief Replaces the settled part of the shape subgraph with constants.
+    ///
+    /// An operator whose result is the same under every shape the graph may
+    /// legally be given need not be run, nor re-run whenever the shape
+    /// changes. Its output already holds that result, worked out during shape
+    /// inference, so the operator is dropped and its output left standing as a
+    /// constant. See `TensorObj::isShapeValueFixed`.
+    ///
+    /// @return How many operators were dropped.
+    size_t foldFixedShapeSubgraph();
+
+    /// @brief Tensors dropped by `foldFixedShapeSubgraph` as no longer
+    /// reachable, by fuid. A caller holding its own references -- the ONNX
+    /// importer keeps one per initializer -- needs to let go of these.
+    const vector<UidBaseType> &getFoldedAwayTensors() const {
+        return foldedAwayTensors;
+    }
+
     void shape_infer();
 
     void dataMalloc(bool useNaiveAllocator = false, size_t memPoolSize = 0);
@@ -200,6 +218,8 @@ class GraphObj : public Object {
      * allocation. Remember the committed layout so changes can be rejected
      * before any tensor data is modified.
      */
+    vector<UidBaseType> foldedAwayTensors;
+
     bool fixedPoolLayoutCommitted = false;
     vector<std::pair<TensorObj *, size_t>> fixedPoolTensorLayout;
     vector<std::pair<TensorObj *, size_t>> fixedPoolActivationLayout;
