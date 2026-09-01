@@ -29,10 +29,10 @@ TEST(MaxPool, ShapeInference) {
 /// A window wider than what it is given still covers a position, and covers it
 /// once, so there is one row and one column of results however small the input
 /// is. Working the count out arithmetically gives zero or less there, and a
-/// spatial size of zero is not a picture the rest of a graph can read: the shape
-/// chain after a pooling carries that zero into a reshape target, where ONNX
-/// spells a dimension of zero the same way it spells keeping the dimension the
-/// input already has. onnxruntime answers one here too.
+/// spatial size of zero is not a picture the rest of a graph can read: the
+/// shape chain after a pooling carries that zero into a reshape target, where
+/// ONNX spells a dimension of zero the same way it spells keeping the dimension
+/// the input already has. onnxruntime answers one here too.
 TEST(MaxPool, AWindowWiderThanItsInputStillYieldsOne) {
     Runtime cpuRuntime = NativeCpuRuntimeObj::getInstance();
     { // Two by two striding by two, over the sizes either side of the turn.
