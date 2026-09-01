@@ -256,7 +256,18 @@ void ShapeObj::inferShapeValue() {
     // The contents of the output are the dimensions of the input, which are
     // known as soon as the input has a shape.
     const auto &dims = inputs[0]->getDims();
-    outputs[0]->setShapeValue(vector<int64_t>(dims.begin(), dims.end()));
+    // A dimension the model declared fixed is the same under every shape the
+    // graph may legally be given, so the element reporting it is settled here
+    // and for good. One declared dynamic is only what the last `set_input`
+    // asked for. A tensor that never declared its dimensions counts every one
+    // of them as dynamic, which keeps an undeclared shape replaceable.
+    vector<bool> fixed;
+    fixed.reserve(dims.size());
+    for (size_t i = 0; i < dims.size(); ++i) {
+        fixed.push_back(!inputs[0]->isDimDynamic(i));
+    }
+    outputs[0]->setShapeValue(vector<int64_t>(dims.begin(), dims.end()),
+                              std::move(fixed));
 }
 
 std::string ShapeObj::toString() const {

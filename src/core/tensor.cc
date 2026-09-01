@@ -4,6 +4,7 @@
 #include "core/operator.h"
 #include "core/runtime.h"
 #include "utils/dataloader.h"
+#include <algorithm>
 #include <cstring>
 #include <limits>
 #include <numeric>
@@ -136,9 +137,33 @@ bool TensorObj::canHoldShapeValue() const {
 }
 
 void TensorObj::setShapeValue(vector<int64_t> value) {
+    const auto elements = value.size();
+    setShapeValue(std::move(value), vector<bool>(elements, true));
+}
+
+void TensorObj::setShapeValue(vector<int64_t> value, vector<bool> fixed) {
     IT_ASSERT(canHoldShapeValue(),
               "only a rank one integer tensor can hold a shape value");
+    IT_ASSERT(value.size() == fixed.size(),
+              "a shape value and its fixedness must describe the same number "
+              "of elements");
     shapeValue = std::move(value);
+    shapeValueFixed = std::move(fixed);
+}
+
+bool TensorObj::isShapeValueFixed(size_t index) const {
+    IT_ASSERT(shapeValue.has_value(),
+              "tensor " + std::to_string(guid) + " has no shape value");
+    IT_ASSERT(index < shapeValueFixed.size());
+    return shapeValueFixed[index];
+}
+
+bool TensorObj::isShapeValueWhollyFixed() const {
+    if (!shapeValue.has_value() || shapeValue->empty()) {
+        return false;
+    }
+    return std::all_of(shapeValueFixed.begin(), shapeValueFixed.end(),
+                       [](const bool fixed) { return fixed; });
 }
 
 Shape TensorObj::getShapeValueAsShape() const {

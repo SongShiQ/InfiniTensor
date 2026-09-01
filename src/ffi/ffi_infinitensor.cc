@@ -494,7 +494,16 @@ void init_graph_builder(py::module &m) {
         .def("is_dim_dynamic", &TensorObj::isDimDynamic, policy::automatic)
         .def("dim_name", &TensorObj::getDimName, policy::move)
         .def("shape_value", &TensorObj::getShapeValue, policy::copy)
-        .def("set_shape_value", &TensorObj::setShapeValue, policy::automatic)
+        .def("is_shape_value_fixed", &TensorObj::isShapeValueFixed,
+             policy::automatic)
+        .def("is_shape_value_wholly_fixed", &TensorObj::isShapeValueWhollyFixed,
+             policy::automatic)
+        // The contents of a constant are fixed, which is the reading the
+        // one-argument setter takes. Naming it settles the overload.
+        .def("set_shape_value",
+             static_cast<void (TensorObj::*)(vector<int64_t>)>(
+                 &TensorObj::setShapeValue),
+             policy::automatic)
         .def("set_weight", &TensorObj::setWeight, policy::move)
         .def("set_input", &TensorObj::setInput, policy::move)
         .def("set_output", &TensorObj::setOutput, policy::move)

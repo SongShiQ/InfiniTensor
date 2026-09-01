@@ -42,6 +42,10 @@ class TensorObj : public TensorBaseObj {
     // Contents of an integer tensor that describes shapes, worked out during
     // shape inference. See `getShapeValue`.
     optional<vector<int64_t>> shapeValue;
+    // Which elements of `shapeValue` are the same under every shape the graph
+    // may legally be given. Always as long as `shapeValue` when that holds a
+    // value, because both are written together. See `isShapeValueFixed`.
+    vector<bool> shapeValueFixed;
 
   public:
     TensorObj(Shape shape, DataType dtype, Runtime runtime);
@@ -84,8 +88,30 @@ class TensorObj : public TensorBaseObj {
     const optional<vector<int64_t>> &getShapeValue() const {
         return shapeValue;
     }
+    /// @brief Records `value` as following only from fixed dimensions.
+    ///
+    /// This is the right reading for the contents of a constant, which are
+    /// whatever the model file says whatever shape the graph is given.
     void setShapeValue(vector<int64_t> value);
-    void clearShapeValue() { shapeValue.reset(); }
+    /// @brief Records `value` along with which of its elements are the same
+    /// under every shape the graph may legally be given.
+    void setShapeValue(vector<int64_t> value, vector<bool> fixed);
+    void clearShapeValue() {
+        shapeValue.reset();
+        shapeValueFixed.clear();
+    }
+    /// @brief Whether element `index` of the shape value is the same under
+    /// every shape the graph may legally be given.
+    ///
+    /// A dimension the model declared fixed cannot change: `set_input` goes
+    /// through `validateShapeChange`, which rejects any attempt to. So an
+    /// element that follows only from such dimensions is already its final
+    /// value while the graph is being built, and whatever computes it need not
+    /// be run again -- or kept at all.
+    bool isShapeValueFixed(size_t index) const;
+    /// @brief Whether every element of the shape value is fixed.
+    /// False when there is no shape value to speak of.
+    bool isShapeValueWhollyFixed() const;
     /// @brief The shape value narrowed to `Shape`, checking every element fits.
     Shape getShapeValueAsShape() const;
     /// @brief Whether this tensor is shaped and typed like a dimension list.
