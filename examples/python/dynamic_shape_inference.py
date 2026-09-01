@@ -5,16 +5,24 @@ carries no number at all, so reading shapes with `dim.dim_value` yields a zero
 for it and an empty tensor after that. Such a model needs a shape supplied per
 inference instead, which is what `set_input` is for.
 
-Two demo models are built in. The first varies its batch size; the second
+Three demo models are built in. The first varies its batch size; the second
 varies the height and width of a picture, which the model reads back out of a
 pooled tensor to restore the two axes it flattened. The second is the harder
 case, and the one where a chain that only ever reads a leading dimension will
 not do.
 
+The third varies the length of a sequence, and its shape chain reads a
+dimension the model declared as a number alongside two it did not. The part
+reading the fixed one is the same under every shape the model may be given, so
+it can be worked out once instead of on every inference; passing `--fold` folds
+exactly that part away and reports how much of the chain was left.
+
 Usage:
     python dynamic_shape_inference.py
     python dynamic_shape_inference.py batch                # just the first
     python dynamic_shape_inference.py image                # just the second
+    python dynamic_shape_inference.py sequence             # just the third
+    python dynamic_shape_inference.py sequence --fold      # and fold it first
     python dynamic_shape_inference.py model.onnx           # a model of your own
     python dynamic_shape_inference.py model.onnx batch=4 height=32 width=32
 
@@ -136,6 +144,80 @@ def image_model():
     )
 
 
+def sequence_model():
+    """A model over sequences, whose shape chain reads a fixed dimension too.
+
+    The feature width is a number the model was given -- 32 -- while the batch
+    and the length of the sequence are not. The chain splits that width into a
+    number of heads and a width per head, works on each head separately, and
+    puts the two back together, which is what an attention export does around
+    its projections.
+
+    The part of the chain that reads the feature width is the same under every
+    shape this model may legally be given, because a dimension declared as a
+    number cannot be changed. The part reading the batch and the length is not.
+    So this model has both kinds in one chain, which is what makes it the one
+    worth folding.
+    """
+    rng = np.random.default_rng(20260901)
+    weight = (rng.standard_normal((8, 8)) / 4).astype(np.float32)
+    return helper.make_model(
+        helper.make_graph(
+            [
+                helper.make_node("Shape", ["x"], ["s"]),
+                helper.make_node("Gather", ["s", "i0"], ["batch"], axis=0),
+                helper.make_node("Gather", ["s", "i1"], ["length"], axis=0),
+                # The one dimension of the three that the model gave a number.
+                helper.make_node("Gather", ["s", "i2"], ["width"], axis=0),
+                # Whatever is left of the width once it is split between heads.
+                # Both operands are settled, so this arithmetic is too.
+                helper.make_node("Div", ["width", "heads"], ["per_head"]),
+                helper.make_node("Unsqueeze", ["batch", "zero"], ["batch_1d"]),
+                helper.make_node("Unsqueeze", ["length", "zero"], ["length_1d"]),
+                helper.make_node("Unsqueeze", ["per_head", "zero"], ["per_head_1d"]),
+                helper.make_node(
+                    "Concat",
+                    ["batch_1d", "length_1d", "heads_1d", "per_head_1d"],
+                    ["split"],
+                    axis=0,
+                ),
+                helper.make_node("Reshape", ["x", "split"], ["by_head"]),
+                helper.make_node("MatMul", ["by_head", "weight"], ["mixed"]),
+                helper.make_node("Relu", ["mixed"], ["activated"]),
+                helper.make_node(
+                    "Concat",
+                    ["batch_1d", "length_1d", "width_1d"],
+                    ["joined"],
+                    axis=0,
+                ),
+                helper.make_node("Reshape", ["activated", "joined"], ["y"]),
+            ],
+            "dynamic_sequence",
+            [
+                helper.make_tensor_value_info(
+                    "x", TensorProto.FLOAT, ["batch", "length", 32]
+                )
+            ],
+            [
+                helper.make_tensor_value_info(
+                    "y", TensorProto.FLOAT, ["batch", "length", 32]
+                )
+            ],
+            [
+                numpy_helper.from_array(np.asarray(0, np.int64), "i0"),
+                numpy_helper.from_array(np.asarray(1, np.int64), "i1"),
+                numpy_helper.from_array(np.asarray(2, np.int64), "i2"),
+                numpy_helper.from_array(np.asarray(4, np.int64), "heads"),
+                numpy_helper.from_array(np.asarray([0], np.int64), "zero"),
+                numpy_helper.from_array(np.asarray([4], np.int64), "heads_1d"),
+                numpy_helper.from_array(np.asarray([32], np.int64), "width_1d"),
+                numpy_helper.from_array(weight, "weight"),
+            ],
+        ),
+        opset_imports=[helper.make_opsetid("", 18)],
+    )
+
+
 def shape_of(value_info, sizes, fallback):
     """The shape to ask for, with every dimension lacking a number filled in.
 
@@ -186,6 +268,16 @@ DEMOS = {
             {"batch": 1, "height": 4, "width": 4},
         ],
     ),
+    "sequence": (
+        sequence_model,
+        [
+            {"batch": 1, "length": 1},
+            {"batch": 2, "length": 7},
+            {"batch": 8, "length": 3},
+            {"batch": 3, "length": 16},
+            {"batch": 1, "length": 1},
+        ],
+    ),
 }
 
 
@@ -195,7 +287,7 @@ def parse(argv):
     Returns a list of (label, model, schedule) where a schedule is a list of
     dimension-name to size mappings, one per inference.
     """
-    args = argv[1:]
+    args = [a for a in argv[1:] if a not in ("--fold", "--pin")]
     if args and args[0] in DEMOS:
         build, schedule = DEMOS[args[0]]
         return [(args[0], build(), schedule)]
@@ -220,45 +312,102 @@ def parse(argv):
     return [(args[0], model, schedule)]
 
 
-def run(label, model, schedule):
+def infer_once(stub, model, inputs, sizes, rng):
+    """Run one inference at `sizes`, and say how the answer compares.
+
+    Returns the line to print. Handing the graph a shape re-infers every shape
+    downstream of it, including whatever a Reshape reads from a Shape subgraph.
+    """
+    fallback = next(iter(sizes.values()))
+    shapes = [shape_of(i, sizes, fallback) for i in inputs]
+    stub.set_input(shapes)
+
+    feeds = {}
+    for value_info, shape in zip(inputs, shapes):
+        data = rng.standard_normal(shape).astype(np.float32)
+        stub.tensors[value_info.name].copyin_numpy(data)
+        feeds[value_info.name] = data
+
+    stub.run()
+
+    name, output = next(iter(stub.outputs.items()))
+    got = np.asarray(output.copyout_float(), dtype=np.float32)
+    # An unnamed size stands for every dynamic dimension at once, so there is
+    # no name worth printing beside it.
+    asked = ", ".join(f"{k}={v}" if k else str(v) for k, v in sizes.items())
+    line = f"[{asked}]: {name} has shape {output.shape()}"
+
+    want = reference(model, feeds)
+    if want is not None and want.size == got.size:
+        error = float(np.abs(got.reshape(want.shape) - want).max())
+        line += f", differs from onnxruntime by at most {error:.2e}"
+    return line
+
+
+def run(label, model, schedule, fold=False):
+    inputs = list(model.graph.input)
+    stub = OnnxStub(model, backend.cpu_runtime())
+    if fold:
+        # What the chain costs, counting only the operators that describe
+        # shapes, since those are the ones folding can reach.
+        before = stub.shape_subgraph_size()
+        dropped = stub.fold_shape_subgraph()
+        print(
+            f"{label:>8}: the shape subgraph holds {before} operators, "
+            f"{dropped} of which are the same under every shape this model may "
+            f"be given and were worked out once; {before - dropped} remain to "
+            f"be computed per inference"
+        )
+    rng = np.random.default_rng(0)
+    for sizes in schedule:
+        print(f"{label:>6} " + infer_once(stub, model, inputs, sizes, rng))
+
+
+def run_pinned(label, model, schedule):
+    """The same model, deployed at one shape for good.
+
+    A dimension the export left dynamic and the deployment pins is knowledge
+    the simplifier could not have had, since it ran before the deployment
+    existed. So this is where folding has something left to remove.
+    """
     inputs = list(model.graph.input)
     stub = OnnxStub(model, backend.cpu_runtime())
     rng = np.random.default_rng(0)
 
-    for sizes in schedule:
-        fallback = next(iter(sizes.values()))
-        shapes = [shape_of(i, sizes, fallback) for i in inputs]
+    # Serve the first shape of the schedule, and only that one.
+    sizes = schedule[0]
+    print(f"{label:>8}: " + infer_once(stub, model, inputs, sizes, rng))
 
-        # Hand the graph the shapes it could not know, which re-infers every
-        # shape downstream of them -- including whatever a Reshape reads from a
-        # Shape subgraph.
-        stub.set_input(shapes)
+    loose = stub.shape_subgraph_size()
+    for value_info in inputs:
+        name = value_info.name
+        dynamic = [
+            axis
+            for axis, dim in enumerate(value_info.type.tensor_type.shape.dim)
+            if dim.dim_value <= 0
+        ]
+        if dynamic:
+            stub.pin_dims(name, dynamic)
+    pinned = stub.fold_shape_subgraph()
+    print(
+        f"{label:>8}: pinned at this shape, {pinned} of those {loose} shape "
+        f"operators became the same under every remaining inference; "
+        f"{stub.shape_subgraph_size()} remain"
+    )
 
-        feeds = {}
-        for value_info, shape in zip(inputs, shapes):
-            data = rng.standard_normal(shape).astype(np.float32)
-            stub.tensors[value_info.name].copyin_numpy(data)
-            feeds[value_info.name] = data
-
-        stub.run()
-
-        name, output = next(iter(stub.outputs.items()))
-        got = np.asarray(output.copyout_float(), dtype=np.float32)
-        # An unnamed size stands for every dynamic dimension at once, so there
-        # is no name worth printing beside it.
-        asked = ", ".join(f"{k}={v}" if k else str(v) for k, v in sizes.items())
-        line = f"{label:>6} [{asked}]: {name} has shape {output.shape()}"
-
-        want = reference(model, feeds)
-        if want is not None and want.size == got.size:
-            error = float(np.abs(got.reshape(want.shape) - want).max())
-            line += f", differs from onnxruntime by at most {error:.2e}"
-        print(line)
+    # The answers must not move, and the pinned shape is the only one left to
+    # ask for.
+    print(f"{label:>8}: " + infer_once(stub, model, inputs, sizes, rng))
 
 
 def main(argv):
+    fold = "--fold" in argv
+    pin = "--pin" in argv
     for label, model, schedule in parse(argv):
-        run(label, model, schedule)
+        if pin:
+            run_pinned(label, model, schedule)
+        else:
+            run(label, model, schedule, fold=fold)
 
 
 if __name__ == "__main__":

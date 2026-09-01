@@ -1537,6 +1537,14 @@ class OnnxStub:
         self.handler.optimize()
         self._forget_folded_tensors()
 
+    def shape_subgraph_size(self) -> int:
+        """How many operators describe shapes rather than data.
+
+        This is the part of the graph `fold_shape_subgraph` can reach, so
+        reading it before a fold says what the fold started from.
+        """
+        return self.handler.shape_subgraph_size()
+
     def fold_shape_subgraph(self) -> int:
         """Replace the settled part of the shape subgraph with constants.
 
@@ -1549,6 +1557,45 @@ class OnnxStub:
         dropped = self.handler.fold_fixed_shape_subgraph()
         self._forget_folded_tensors()
         return dropped
+
+    def pin_dims(self, name: str, axes: Sequence[int]) -> None:
+        """Declare that some of an input's dimensions are fixed from here on.
+
+        A model is commonly exported with a dimension left dynamic and then
+        deployed at one size for good: an export makes the batch variable, and
+        the server that loads it serves one batch size. Saying so lets
+        everything following from that dimension be worked out once by
+        `fold_shape_subgraph`, which is knowledge no simplifier run before the
+        deployment existed could have had.
+
+        The pinned dimensions keep the size they hold now, and asking for
+        another one afterwards is refused.
+        """
+        if name not in self.inputs:
+            raise ValueError(
+                'no input named "{}"; this model takes {}'.format(
+                    name, ", ".join(self.inputs) or "nothing"
+                )
+            )
+        tensor = self.inputs[name]
+        rank = len(tensor.shape())
+        descs = list(tensor.dim_descs())
+        if not descs:
+            # A tensor that declared nothing counts every dimension dynamic.
+            descs = [backend.DimDesc(True, "") for _ in range(rank)]
+        for axis in axes:
+            if not 0 <= axis < rank:
+                raise ValueError(
+                    'input "{}" has rank {}, so it has no axis {}'.format(
+                        name, rank, axis
+                    )
+                )
+            descs[axis] = backend.DimDesc(False, "")
+        self.handler.set_dim_descs(descs, tensor.fuid())
+        # Spreading this fixedness through the shape values takes a round of
+        # inference, and `set_input` will not do it: it skips a shape the
+        # tensor already carries, which is exactly the size just pinned.
+        self.handler.shape_infer()
 
     def _forget_folded_tensors(self) -> None:
         """Drop what the graph no longer holds.

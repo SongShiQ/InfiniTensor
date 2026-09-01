@@ -3,6 +3,7 @@
 #include "operators/concat.h"
 #include "operators/element_wise.h"
 #include "operators/gather.h"
+#include "operators/matmul.h"
 #include "operators/reshape.h"
 #include "operators/slice.h"
 #include "operators/unary.h"
@@ -61,6 +62,87 @@ TEST(ShapeFold, MaskFollowsDeclaredDimensions) {
     EXPECT_TRUE(shape->getOutput()->isShapeValueFixed(2));
     EXPECT_FALSE(shape->getOutput()->isShapeValueFixed(3));
     EXPECT_FALSE(shape->getOutput()->isShapeValueWhollyFixed());
+}
+
+/// A `Shape` reading something the graph worked out is settled when everything
+/// that was worked out from is. An exporter puts the shape chain after the
+/// layers whose output it describes -- a picture model reads the size a
+/// convolution left, not the size it was given -- so without this the chain
+/// that matters most is the one nothing can be known about.
+///
+/// This is settled by a pass over the graph rather than as each operator is
+/// added, because a tensor's producers have to exist before what it inherits
+/// from them can be read. So it takes a round of inference.
+TEST(ShapeFold, FixednessReachesComputedTensors) {
+    auto runtime = NativeCpuRuntimeObj::getInstance();
+    Graph g = make_ref<GraphObj>(runtime);
+
+    auto input = g->addTensor(Shape{1, 3, 8, 8}, DataType::Float32);
+    input->setDimDescs(
+        {{false, ""}, {false, ""}, {false, ""}, {false, ""}});
+    auto computed = g->addOp<ReluObj>(input, nullptr);
+    auto shape = g->addOp<ShapeObj>(computed->getOutput(), nullptr);
+    g->shape_infer();
+
+    EXPECT_TRUE(shape->getOutput()->isShapeValueWhollyFixed());
+    EXPECT_EQ(*shape->getOutput()->getShapeValue(),
+              (vector<int64_t>{1, 3, 8, 8}));
+}
+
+/// The answer is one per tensor rather than one per dimension: a single
+/// dimension that moves leaves every dimension of everything downstream of it
+/// described as replaceable, including the ones that plainly cannot move.
+///
+/// What is missing to do better is which output dimension each input dimension
+/// reached, which is a question only the operator can answer. Following the
+/// graph cannot, so it errs the one safe way -- calling a dimension replaceable
+/// when in truth it is fixed costs a fold that could have happened, while the
+/// other way round would fold something that still has to be computed.
+///
+/// The cost is real and worth naming: a batch size that moves is the ordinary
+/// case, so under this rule a chain reading a computed tensor only settles once
+/// every dimension it descends from is pinned.
+TEST(ShapeFold, OneDimensionThatMovesUnsettlesTheWholeTensor) {
+    auto runtime = NativeCpuRuntimeObj::getInstance();
+    Graph g = make_ref<GraphObj>(runtime);
+
+    auto input = g->addTensor(Shape{1, 3}, DataType::Float32);
+    // Only the batch moves. The three is a number the model was given.
+    input->setDimDescs({{true, "batch"}, {false, ""}});
+    auto computed = g->addOp<ReluObj>(input, nullptr);
+    auto shape = g->addOp<ShapeObj>(computed->getOutput(), nullptr);
+    g->shape_infer();
+
+    EXPECT_FALSE(shape->getOutput()->isShapeValueFixed(0));
+    // Read straight off the input this would be fixed, and is not here.
+    EXPECT_FALSE(shape->getOutput()->isShapeValueFixed(1));
+
+    auto direct = g->addOp<ShapeObj>(input, nullptr);
+    EXPECT_TRUE(direct->getOutput()->isShapeValueFixed(1));
+}
+
+/// A weight is the data it carries and its shape is that data's shape. Nothing
+/// hands one a shape -- only an input is ever given one -- so its dimensions are
+/// fixed whatever it was or was not told about them. Otherwise fixedness would
+/// stop at the first layer that has weights, which is most of them.
+TEST(ShapeFold, FixednessCrossesALayerWithWeights) {
+    auto runtime = NativeCpuRuntimeObj::getInstance();
+    Graph g = make_ref<GraphObj>(runtime);
+
+    auto input = g->addTensor(Shape{2, 3}, DataType::Float32);
+    input->setDimDescs({{false, ""}, {false, ""}});
+    auto weight = g->addTensor(Shape{3, 4}, DataType::Float32);
+    weight->dataMalloc();
+    weight->setWeight();
+    EXPECT_FALSE(weight->isDimDynamic(0));
+
+    auto product =
+        g->addOp<MatmulObj>(input, weight, nullptr, false, false, nullptr);
+    auto shape = g->addOp<ShapeObj>(product->getOutput(), nullptr);
+    g->shape_infer();
+
+    EXPECT_TRUE(shape->getOutput()->isShapeValueWhollyFixed());
+    EXPECT_EQ(*shape->getOutput()->getShapeValue(), (vector<int64_t>{2, 4}));
 }
 
 /// A tensor that never declared its dimensions keeps every one of them

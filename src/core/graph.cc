@@ -261,6 +261,15 @@ void writeShapeValueAsData(const Tensor &tensor) {
 }
 } // namespace
 
+size_t GraphObj::shapeSubgraphSize() const {
+    // The same test the fold applies, so that the two cannot come to disagree
+    // about what a shape operator is.
+    return static_cast<size_t>(
+        std::count_if(ops.begin(), ops.end(), [](const Operator &op) {
+            return describesShapes(op);
+        }));
+}
+
 size_t GraphObj::foldFixedShapeSubgraph() {
     foldedAwayTensors.clear();
 
@@ -397,6 +406,26 @@ Tensor GraphObj::getTensor(int fuid) const {
     return nullptr;
 }
 
+void GraphObj::spreadFixedDims(const Operator &op) {
+    const bool settled =
+        std::all_of(op->getInputs().begin(), op->getInputs().end(),
+                    [](const Tensor &input) {
+                        for (size_t i = 0; i < input->getRank(); ++i) {
+                            if (input->isDimDynamic(i)) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    });
+    for (const auto &output : op->getOutputs()) {
+        // Saying nothing leaves every dimension replaceable, which is what an
+        // operator reading a dimension that still moves has to report.
+        output->setDimDescs(
+            settled ? DimDescs(output->getRank(), DimDesc{false, ""})
+                    : DimDescs{});
+    }
+}
+
 void GraphObj::shape_infer() {
     for (auto &op : ops) {
         auto ans = op->inferShape();
@@ -413,6 +442,11 @@ void GraphObj::shape_infer() {
                 tensor->setShape(newShape);
             }
         }
+        // Which of these dimensions can change follows from which of the ones
+        // they were worked out from can. This goes after the shapes are in
+        // place, because a `Reshape` may have just given an output a different
+        // rank and a description has to have one per dimension.
+        spreadFixedDims(op);
         // Shapes are settled for this operator, so a shape value that follows
         // from them can be worked out now. `ops` is in topological order, so
         // every consumer is visited after its producers and sees a current

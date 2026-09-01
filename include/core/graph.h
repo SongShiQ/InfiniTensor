@@ -102,6 +102,12 @@ class GraphObj : public Object {
     /// @return How many operators were dropped.
     size_t foldFixedShapeSubgraph();
 
+    /// @brief How many operators of this graph describe shapes rather than
+    /// data, which is the part of it `foldFixedShapeSubgraph` can reach. Says
+    /// what a fold started from, so that what it left can be compared against
+    /// it.
+    size_t shapeSubgraphSize() const;
+
     /// @brief Tensors dropped by `foldFixedShapeSubgraph` as no longer
     /// reachable, by fuid. A caller holding its own references -- the ONNX
     /// importer keeps one per initializer -- needs to let go of these.
@@ -110,6 +116,19 @@ class GraphObj : public Object {
     }
 
     void shape_infer();
+
+    /// Say which dimensions of what `op` computes are fixed.
+    ///
+    /// `dimDescs` says which dimensions of a tensor a graph is given may
+    /// change; nothing said it of one the graph works out. A computed shape is
+    /// a function of the shapes the graph was given -- `inferShape` and nothing
+    /// else -- so a dimension of a computed tensor can change exactly when some
+    /// dimension it was worked out from can. Which makes this a matter of
+    /// following the operators rather than of asking each one what it does.
+    ///
+    /// Call this once `op` has its output shapes, and in topological order, so
+    /// that what it reads of its inputs is current.
+    void spreadFixedDims(const Operator &op);
 
     void dataMalloc(bool useNaiveAllocator = false, size_t memPoolSize = 0);
 

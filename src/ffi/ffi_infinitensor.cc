@@ -665,6 +665,8 @@ void init_graph_builder(py::module &m) {
              policy::automatic)
         .def("folded_away_tensors", &Handler::folded_away_tensors, policy::copy)
         .def("operator_count", &Handler::operator_count, policy::automatic)
+        .def("shape_subgraph_size", &Handler::shape_subgraph_size,
+             policy::automatic)
         .def("getDims", &Handler::getDims, policy::automatic)
         .def("get_perf_time", &Handler::get_perf_time, policy::automatic);
 }

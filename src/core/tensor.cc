@@ -99,6 +99,12 @@ void TensorObj::setDimDescs(DimDescs descs) {
 
 bool TensorObj::isDimDynamic(size_t dim) const {
     IT_ASSERT(dim < shape.size());
+    // A weight is the data it carries, and its shape is that data's shape. It
+    // is not something a caller hands a shape to, so none of its dimensions can
+    // change -- whatever it was or was not told about them.
+    if (isWeight()) {
+        return false;
+    }
     // Without declared dimensionality every dimension stays replaceable.
     return dimDescs.empty() || dimDescs[dim].dynamic;
 }

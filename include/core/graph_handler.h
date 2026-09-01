@@ -142,6 +142,10 @@ class GraphHandlerObj {
 
     inline size_t operator_count() const { return g->getOperators().size(); }
 
+    inline size_t shape_subgraph_size() const {
+        return g->shapeSubgraphSize();
+    }
+
     inline void shape_infer() { g->shape_infer(); }
 
     void change_shape(const vector<int> &shape, int tensorId);
