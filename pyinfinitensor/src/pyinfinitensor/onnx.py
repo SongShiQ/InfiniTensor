@@ -1128,6 +1128,10 @@ class OnnxStub:
                 tensors[output_name] = self.handler.tensor(dims, tensor.data_type)
                 data[output_name] = tensor
                 tensors[output_name].set_weight()
+                # An axis or a shape reaches a graph either as an initializer or
+                # as a `Constant`, and an exporter may choose either. Seed both
+                # the same way; see the loop over `model.graph.initializer`.
+                _seed_shape_value(tensors[output_name], tensor)
             elif node.op_type == "ConstantOfShape":
                 raise NotImplementedError(
                     'Unsupported operator "ConstantOfShape": static and dynamic '
