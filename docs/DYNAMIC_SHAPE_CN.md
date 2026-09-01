@@ -10,6 +10,7 @@
 - [动态维度是怎么表示的](#动态维度是怎么表示的)
 - [运行时目标 Shape](#运行时目标-shape)
 - [连续换形状](#连续换形状)
+- [换形状要花多少内存](#换形状要花多少内存)
 - [把维度钉住](#把维度钉住)
 - [支持范围](#支持范围)
 - [已知限制](#已知限制)
@@ -100,7 +101,44 @@ for shape in ([1, 3, 8, 8], [2, 3, 8, 8], [8, 3, 12, 12], [3, 3, 4, 4], [1, 3, 8
     print(stub.outputs["y"].shape())
 ```
 
-`set_input` 会重新推断所有下游形状并重新规划内存。形状变大时重新分配，变小时不会读到上一次留下的尾巴。形状与上一次相同时整段跳过，因为重新排布内存比跑一遍图还贵，而一个已经被接受过的形状不需要再验一遍。
+`set_input` 会重新推断所有下游形状并重新规划内存。形状与上一次相同时整段跳过，因为重新排布内存比跑一遍图还贵，而一个已经被接受过的形状不需要再验一遍。
+
+## 换形状要花多少内存
+
+重新排布不等于重新分配。activation 的存储量停在已见过形状的最高水位上，后来一个装得下的形状直接复用，不再向 runtime 要内存；超出水位时按 1.5 倍增长。所以一段来回变化的形状序列，稳态下一次分配都不做。
+
+```python
+stub.activation_allocations()   # 累计向 runtime 要过几次
+stub.activation_peak()          # 当前形状需要多少字节
+stub.activation_capacity()      # 实际持有多少字节，即水位
+stub.allocated_bytes()          # 连权重和堆一起，一共持有多少
+```
+
+`peak` 与 `capacity` 的差就是换来复用的那部分余量。`trim_memory()` 把余量还掉，代价是下一次换形状要重新分配。
+
+`examples/python/dynamic_shape_benchmark.py` 把这件事量出来，同时对比「复用」与「每次推理后 trim」两种策略：
+
+```bash
+python examples/python/dynamic_shape_benchmark.py model.onnx \
+    --sweep batch=1,1,1,1 height=32,128,256,32 width=32,128,256,32
+```
+
+在本机（CPU，两个自带模型）测得：
+
+在本机（CPU，两个自带模型）测得。分配次数和持有字节是数出来的，多次运行完全一致；时间是测出来的，跨运行有约五成的漂移，所以给的是复用相对精确分配的倍率而不是绝对毫秒数：
+
+| 模型 | 序列 | 分配次数（复用 / 精确） | 平均持有（复用 / 精确） | 每次推理 |
+|---|---|---|---|---|
+| 17 算子图像模型 | 32/128/256/32 循环 4 轮 | 0 / 12 | 5.00 MiB / 1.60 MiB | 快 11%–17% |
+| 51 算子 attention | seq 8/16/32 循环 6 轮 | 0 / 36 | 0.07 MiB / 0.04 MiB | 快约 5%，在波动内 |
+
+三点要说准：
+
+- **分配次数被完全消掉**，稳态下是 0 而不是「变少」。
+- **省下的时间落在排布那一段，不在算子执行上。** 图像模型上 12 轮交替试验测得复用的 `layout` 是精确分配的 0.42 倍（逐轮 0.37–0.48），而 `run` 的比值是 1.03，即执行时间不变。收益随张量大小放大：attention 的张量只有 0.07 MiB，分配成本相对 51 个算子的执行微不足道，脚本会自己标注差异落在试验波动内。
+- **代价是多占内存**：图像模型平均持有 5.00 MiB 对 1.60 MiB，多三倍。全序列峰值两边一样，因为序列里含最大的那个形状，两边在那一刻都得持有它；差别在于之后还持不持着。
+
+时间不要用单次总时长比较——总和被少数几次慢推理决定，而它们落在哪个策略上取决于谁先跑。脚本默认交替测 5 轮取中位试验，就是为了这个：单轮各测一次时，换个顺序结论会反过来。
 
 ## 把维度钉住
 
@@ -189,6 +227,13 @@ python -m pytest pyinfinitensor/tests/test_dynamic_shape_ort.py -v
 build/Release/test_shape_fold          # 形状值传播与折叠
 build/Release/test_nativecpu_slice     # CPU slice kernel
 build/Release/test_nativecpu_matmul    # CPU matmul kernel，含 bias 与 batch
+build/Release/test_graph               # 含容量复用与分配计数的校准
+```
+
+内存与延迟测量，同时验证两种策略输出逐位一致：
+
+```bash
+python examples/python/dynamic_shape_benchmark.py model.onnx --sweep batch=1,2,4,8
 ```
 
 需要 `onnxruntime` 才能跑一致性对比，没有装的话相关测试会跳过而不是失败：

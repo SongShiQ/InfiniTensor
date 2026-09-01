@@ -352,6 +352,100 @@ TEST(Graph, lazy_allocator_grows_and_trims_capacity) {
     EXPECT_EQ(runtime->getAllocationCount(), runtime->getDeallocationCount());
 }
 
+// The two counters a benchmark reads have to mean what they say, and what they
+// say is different things: one counts memory actually asked of the runtime, the
+// other counts layouts. A shape that shrinks moves every tensor to a new offset
+// without any memory changing hands, which is where the two part company. The
+// tracking runtime is the standard here -- its counts are what the tests above
+// establish -- so the activation count is checked against it rather than
+// against itself.
+TEST(Graph, activation_allocation_count_tracks_real_allocations) {
+    auto runtime = make_ref<TrackingCpuRuntimeObj>();
+    {
+        Graph g = make_ref<GraphObj>(runtime);
+        Tensor input = g->addTensor({8, 2}, DataType::Float32);
+        Tensor weight = g->addTensor({2, 2}, DataType::Float32);
+        input->setInput();
+        weight->setWeight();
+        auto matmul = g->addOp<MatmulObj>(input, weight, nullptr);
+        Tensor output = matmul->getOutput();
+        output->setOutput();
+
+        g->dataMalloc();
+        weight->copyin(vector<float>{1, 0, 0, 1});
+        EXPECT_GT(g->getActivationAllocations(), 0u);
+        EXPECT_GT(g->getActivationCapacity(), 0u);
+        EXPECT_LE(g->getActivationPeak(), g->getActivationCapacity());
+
+        // Reuse: neither counter moves, and neither does the generation, since
+        // laying the same shape out again changes nothing at all.
+        {
+            const auto activations = g->getActivationAllocations();
+            const auto generation = g->getAllocationGeneration();
+            const auto runtimeCount = runtime->getAllocationCount();
+            g->dataMalloc();
+            EXPECT_EQ(g->getActivationAllocations(), activations);
+            EXPECT_EQ(g->getAllocationGeneration(), generation);
+            EXPECT_EQ(runtime->getAllocationCount(), runtimeCount);
+        }
+
+        // Growth past capacity: one allocation, counted once, and the capacity
+        // afterwards is the grown one rather than what the shape needs.
+        {
+            const auto activations = g->getActivationAllocations();
+            const auto runtimeCount = runtime->getAllocationCount();
+            const auto capacity = g->getActivationCapacity();
+            input->setShape({9, 2});
+            g->shape_infer();
+            g->dataMalloc();
+            EXPECT_EQ(g->getActivationAllocations(), activations + 1);
+            EXPECT_EQ(runtime->getAllocationCount(), runtimeCount + 1);
+            EXPECT_EQ(g->getActivationCapacity(), capacity + capacity / 2);
+            EXPECT_LT(g->getActivationPeak(), g->getActivationCapacity());
+        }
+
+        // Shrinking is where the two counters diverge: the layout is new, so
+        // the generation moves, but the storage is the old one and no memory is
+        // asked for. This is the claim the two doc comments make.
+        {
+            const auto activations = g->getActivationAllocations();
+            const auto generation = g->getAllocationGeneration();
+            const auto capacity = g->getActivationCapacity();
+            input->setShape({4, 2});
+            g->shape_infer();
+            g->dataMalloc();
+            EXPECT_EQ(g->getActivationAllocations(), activations);
+            EXPECT_GT(g->getAllocationGeneration(), generation);
+            EXPECT_EQ(g->getActivationCapacity(), capacity);
+        }
+
+        // A long series within the watermark costs nothing, which is the whole
+        // claim of the reuse and the number a benchmark is after.
+        {
+            const auto activations = g->getActivationAllocations();
+            for (int i = 0; i < 100; ++i) {
+                input->setShape({i % 2 == 0 ? 6 : 8, 2});
+                g->shape_infer();
+                g->dataMalloc();
+            }
+            EXPECT_EQ(g->getActivationAllocations(), activations);
+        }
+
+        // Trimming hands the slack back, which costs one allocation, and
+        // leaves capacity equal to what the shape needs.
+        {
+            const auto activations = g->getActivationAllocations();
+            g->trimMemory();
+            EXPECT_EQ(g->getActivationAllocations(), activations + 1);
+            EXPECT_EQ(g->getActivationCapacity(), g->getActivationPeak());
+        }
+
+        EXPECT_GE(g->getAllocatedBytes(), g->getActivationCapacity());
+    }
+    EXPECT_EQ(runtime->getLiveAllocationCount(), 0);
+    EXPECT_EQ(runtime->getAllocationCount(), runtime->getDeallocationCount());
+}
+
 TEST(Graph, lazy_allocator_trim_failure_preserves_committed_layout) {
     auto runtime = make_ref<TrackingCpuRuntimeObj>();
     {

@@ -1622,6 +1622,30 @@ class OnnxStub:
     def trim_memory(self) -> None:
         self.handler.trim_memory()
 
+    def activation_allocations(self) -> int:
+        """How many times activation storage has been asked of the runtime.
+
+        Storage that is reused does not count, so this is what a workload
+        changing shape from one inference to the next is trying to hold down.
+        """
+        return self.handler.activation_allocations()
+
+    def activation_peak(self) -> int:
+        """Bytes the activations need for the shape currently in place."""
+        return self.handler.activation_peak()
+
+    def activation_capacity(self) -> int:
+        """Bytes actually held for activations.
+
+        This stands at the high watermark of the shapes seen so far; the
+        difference from `activation_peak` is the slack that buys the reuse.
+        """
+        return self.handler.activation_capacity()
+
+    def allocated_bytes(self) -> int:
+        """Every byte the graph holds: activations, weights and heap."""
+        return self.handler.allocated_bytes()
+
     def set_input(self, inputShapes: List[Sequence[int]]) -> None:
         if len(inputShapes) != len(self.inputs):
             raise ValueError(

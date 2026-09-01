@@ -144,6 +144,32 @@ class GraphObj : public Object {
     void validateMemory() const;
 
     size_t getAllocationGeneration() const { return allocationGeneration; }
+
+    /// How many times activation storage has been asked of the runtime over
+    /// this graph's life. Distinct from the generation above, which counts
+    /// layouts: shrinking a tensor gives it a new size at a new offset without
+    /// any memory being asked for, so the generation moves and this does not.
+    /// It is this one that says whether a series of shapes is paying for its
+    /// changes.
+    size_t getActivationAllocations() const {
+        return allocator.getActivationAllocations();
+    }
+
+    /// What the activations need, against what is held for them, in bytes.
+    /// Capacity stands at the high watermark of the shapes seen so far, and the
+    /// difference is the slack that lets a smaller shape reuse the storage.
+    size_t getActivationPeak() const { return allocator.getActivationPeak(); }
+    size_t getActivationCapacity() const {
+        return allocator.getActivationCapacity();
+    }
+
+    /// Every byte the graph holds: the activation capacity as actually
+    /// allocated, the weights, and the heap that cloned tensors live on.
+    size_t getAllocatedBytes() const {
+        return allocator.getActivationCapacity() + allocator.getWeightPeak() +
+               allocator.getHeapPeak();
+    }
+
     uint64_t getCaptureStateId() const { return captureState->getId(); }
     size_t getCaptureGeneration() const {
         return captureState->getGeneration();

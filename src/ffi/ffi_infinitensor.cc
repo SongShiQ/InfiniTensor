@@ -649,6 +649,12 @@ void init_graph_builder(py::module &m) {
              py::arg("useNaiveAllocator") = false, py::arg("memPoolSize") = 0,
              policy::automatic)
         .def("trim_memory", &Handler::trim_memory, policy::automatic)
+        .def("activation_allocations", &Handler::activation_allocations,
+             policy::automatic)
+        .def("activation_peak", &Handler::activation_peak, policy::automatic)
+        .def("activation_capacity", &Handler::activation_capacity,
+             policy::automatic)
+        .def("allocated_bytes", &Handler::allocated_bytes, policy::automatic)
         .def("clone_KV", &Handler::clone_KV, policy::move)
         .def("free_heap", &Handler::free_heap, policy::move)
         .def("get_perf_time", &Handler::get_perf_time, policy::automatic)
@@ -667,8 +673,7 @@ void init_graph_builder(py::module &m) {
         .def("operator_count", &Handler::operator_count, policy::automatic)
         .def("shape_subgraph_size", &Handler::shape_subgraph_size,
              policy::automatic)
-        .def("getDims", &Handler::getDims, policy::automatic)
-        .def("get_perf_time", &Handler::get_perf_time, policy::automatic);
+        .def("getDims", &Handler::getDims, policy::automatic);
 }
 
 } // namespace infini
