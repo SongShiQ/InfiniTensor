@@ -148,9 +148,7 @@ class Measurement:
                 ),
                 "    peak held by allocator  : {}".format(held),
                 "    mean held across series : {:.2f} MiB".format(
-                    statistics.mean(self.held) / (1024 * 1024)
-                    if self.held
-                    else 0.0
+                    statistics.mean(self.held) / (1024 * 1024) if self.held else 0.0
                 ),
                 "    peak held by process    : {}".format(process),
             ]
@@ -277,10 +275,7 @@ def build_series(
 
     # Nothing asked for: sweep every symbol the model declares over a few sizes.
     symbols = {
-        dim
-        for dims in declared_shapes(model)
-        for dim in dims
-        if isinstance(dim, str)
+        dim for dims in declared_shapes(model) for dim in dims if isinstance(dim, str)
     }
     if not symbols:
         raise SystemExit(
@@ -342,9 +337,11 @@ def main() -> None:
     print("model     : {}".format(args.model))
     print("operators : {}".format(len(model.graph.node)))
     print("declared  : {}".format(declared_shapes(model)))
-    print("series    : {} inferences over {} distinct shapes".format(
-        len(series), len({tuple(map(tuple, shapes)) for shapes in series})
-    ))
+    print(
+        "series    : {} inferences over {} distinct shapes".format(
+            len(series), len({tuple(map(tuple, shapes)) for shapes in series})
+        )
+    )
     print()
 
     runtime = backend.cpu_runtime()
@@ -398,12 +395,8 @@ def main() -> None:
     # Totals are not compared across policies: they are sums, so a handful of
     # slow inferences decides them, and which policy collects those depends on
     # the order. The median of an inference is what survives that.
-    reuse_median = statistics.median(reuse.layout_ms) + statistics.median(
-        reuse.run_ms
-    )
-    naive_median = statistics.median(naive.layout_ms) + statistics.median(
-        naive.run_ms
-    )
+    reuse_median = statistics.median(reuse.layout_ms) + statistics.median(reuse.run_ms)
+    naive_median = statistics.median(naive.layout_ms) + statistics.median(naive.run_ms)
     if naive_median:
         drift = (reuse_median - naive_median) / naive_median * 100
         print(
@@ -418,9 +411,11 @@ def main() -> None:
         "peak held             : {:.2f} MiB against {:.2f} MiB, {:+.1f}%".format(
             reuse.peak_held / (1024 * 1024),
             naive.peak_held / (1024 * 1024),
-            (reuse.peak_held - naive.peak_held) / naive.peak_held * 100
-            if naive.peak_held
-            else 0.0,
+            (
+                (reuse.peak_held - naive.peak_held) / naive.peak_held * 100
+                if naive.peak_held
+                else 0.0
+            ),
         )
     )
     # The peak is the same by construction whenever the series contains its own
