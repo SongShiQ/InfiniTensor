@@ -133,6 +133,20 @@ optional<vector<Shape>> IdentityObj::inferShape(const TensorVec &inputs) {
     return {{getInputs(0)->getDims()}};
 }
 
+void IdentityObj::inferShapeValue() {
+    if (!beginShapeValueUpdate()) {
+        return;
+    }
+    // The output is the input: the same elements, each as settled as it was.
+    const auto &value = *inputs[0]->getShapeValue();
+    vector<bool> fixed;
+    fixed.reserve(value.size());
+    for (size_t i = 0; i < value.size(); ++i) {
+        fixed.push_back(inputs[0]->isShapeValueFixed(i));
+    }
+    outputs[0]->setShapeValue(value, std::move(fixed));
+}
+
 std::string IdentityObj::toString() const {
     std::ostringstream os;
     os << "Identity[" << getGuid() << "]";

@@ -932,11 +932,23 @@ class OnnxStub:
                     tensors[node.input[0]], tensors.get(node.output[0])
                 )
             elif node.op_type == "Cast":
-                tensors[node.output[0]] = self.handler.cast(
-                    tensors[node.input[0]],
-                    tensors.get(node.output[0]),
-                    next((attr.i for attr in node.attribute if attr.name == "to")),
-                )
+                to = next(attr.i for attr in node.attribute if attr.name == "to")
+                if to == tensors[node.input[0]].dtype():
+                    # A cast to the type a tensor already holds does nothing.
+                    # An exporter emits these freely, and around a shape
+                    # subgraph in particular, so reading one as a copy keeps
+                    # the chain of shape values unbroken. Same idiom as
+                    # `Dropout` above, which is also a copy at inference.
+                    tensors[node.output[0]] = self.handler.identity(
+                        tensors[node.input[0]],
+                        tensors.get(node.output[0]),
+                    )
+                else:
+                    tensors[node.output[0]] = self.handler.cast(
+                        tensors[node.input[0]],
+                        tensors.get(node.output[0]),
+                        to,
+                    )
             elif node.op_type == "ReduceSum":
                 if any(attr.name == "communicator" for attr in node.attribute):
                     # ReduceSum with communicator is treated as allReduceSum.
