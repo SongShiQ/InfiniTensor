@@ -113,6 +113,24 @@ optional<vector<Shape>> ConvObj::inferShape(const TensorVec &inputs) {
     return {{{on, oc, oh, ow}}};
 }
 
+vector<DimSource> ConvObj::dimSources(size_t output, size_t dim) const {
+    IT_ASSERT(output == 0);
+    IT_ASSERT(dim < 4);
+    // A bias is added to channels already counted, so it is never what a
+    // dimension followed and is left out whether or not one was given.
+    switch (dim) {
+    case 0:
+        return {DimSource{0, 0}}; // batch, as given
+    case 1:
+        return {DimSource{1, 0}}; // one channel per filter the weight holds
+    default:
+        // Spatial, worked out from the input and the kernel together. Padding,
+        // stride and dilation are attributes rather than dimensions, and are
+        // fixed for the life of the operator.
+        return {DimSource{0, dim}, DimSource{1, dim}};
+    }
+}
+
 void Conv3dObj::setAuxilaryAttributes(PaddingMode mode) {
     const Tensor &input = inputs[0];
     const Tensor &weight = inputs[1];

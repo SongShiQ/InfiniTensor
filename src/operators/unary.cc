@@ -11,6 +11,12 @@ optional<vector<Shape>> UnaryObj::inferShape(const TensorVec &inputs) {
     return {{A->getDims()}};
 }
 
+vector<DimSource> UnaryObj::dimSources(size_t output, size_t dim) const {
+    IT_ASSERT(output == 0);
+    IT_ASSERT(dim < outputs[0]->getRank());
+    return {DimSource{0, dim}};
+}
+
 std::string UnaryObj::toString() const {
     std::ostringstream os;
     os << type.toString() << "[" << getGuid() << "]";

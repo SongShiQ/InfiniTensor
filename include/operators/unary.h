@@ -18,6 +18,8 @@ class UnaryObj : public OperatorObj {
      */
     UnaryObj(OpType type, GraphObj *graph, Tensor input, Tensor output);
     optional<vector<Shape>> inferShape(const TensorVec &inputs) override;
+    /// Applied to each element in place, so a dimension is the one it was.
+    vector<DimSource> dimSources(size_t output, size_t dim) const override;
 
     std::string toString() const override;
     int numInputs() const override { return 1; }

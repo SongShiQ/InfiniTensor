@@ -52,6 +52,15 @@ optional<vector<Shape>> PoolingObj::inferShape(const TensorVec &inputs) {
     return {{ret}};
 }
 
+vector<DimSource> PoolingObj::dimSources(size_t output, size_t dim) const {
+    IT_ASSERT(output == 0);
+    IT_ASSERT(dim < outputs[0]->getRank());
+    // The output keeps the rank it was given and each dimension is worked out
+    // from the one in its place: batch and channels are passed through, and a
+    // spatial one is strided over by a window the attributes fix.
+    return {DimSource{0, dim}};
+}
+
 std::string PoolingObj::toString() const {
     std::ostringstream os;
     os << type.toString() << "[" << getGuid() << "]";

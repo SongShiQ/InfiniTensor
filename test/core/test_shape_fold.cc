@@ -1,11 +1,14 @@
 #include "core/graph.h"
 #include "core/runtime.h"
 #include "operators/concat.h"
+#include "operators/conv.h"
 #include "operators/element_wise.h"
 #include "operators/gather.h"
 #include "operators/matmul.h"
+#include "operators/pooling.h"
 #include "operators/reshape.h"
 #include "operators/slice.h"
+#include "operators/transpose.h"
 #include "operators/unary.h"
 #include "operators/unsqueeze.h"
 #include "test.h"
@@ -88,20 +91,21 @@ TEST(ShapeFold, FixednessReachesComputedTensors) {
               (vector<int64_t>{1, 3, 8, 8}));
 }
 
-/// The answer is one per tensor rather than one per dimension: a single
-/// dimension that moves leaves every dimension of everything downstream of it
-/// described as replaceable, including the ones that plainly cannot move.
+/// One dimension that moves unsettles that dimension and no other. Which
+/// output dimension an input dimension reached is a question only the operator
+/// can answer, and `dimSources` is where it answers it: a `Relu` is applied in
+/// place, so a dimension of what it computes is the dimension it was.
 ///
-/// What is missing to do better is which output dimension each input dimension
-/// reached, which is a question only the operator can answer. Following the
-/// graph cannot, so it errs the one safe way -- calling a dimension replaceable
-/// when in truth it is fixed costs a fold that could have happened, while the
+/// This matters because a batch size that moves is the ordinary case. Under a
+/// rule that unsettles the whole tensor, a chain reading a computed tensor only
+/// settles once every dimension it descends from is pinned -- so a deployment
+/// serving one picture size at a batch size it varies would settle nothing at
+/// all, though its height and width plainly cannot move.
+///
+/// An operator that says nothing still gets the conservative answer, which is
+/// every dimension of every input; being wrong that way costs a fold, while the
 /// other way round would fold something that still has to be computed.
-///
-/// The cost is real and worth naming: a batch size that moves is the ordinary
-/// case, so under this rule a chain reading a computed tensor only settles once
-/// every dimension it descends from is pinned.
-TEST(ShapeFold, OneDimensionThatMovesUnsettlesTheWholeTensor) {
+TEST(ShapeFold, OneDimensionThatMovesUnsettlesOnlyItself) {
     auto runtime = NativeCpuRuntimeObj::getInstance();
     Graph g = make_ref<GraphObj>(runtime);
 
@@ -113,11 +117,77 @@ TEST(ShapeFold, OneDimensionThatMovesUnsettlesTheWholeTensor) {
     g->shape_infer();
 
     EXPECT_FALSE(shape->getOutput()->isShapeValueFixed(0));
-    // Read straight off the input this would be fixed, and is not here.
-    EXPECT_FALSE(shape->getOutput()->isShapeValueFixed(1));
+    // Fixed read straight off the input, and fixed read through the Relu too.
+    EXPECT_TRUE(shape->getOutput()->isShapeValueFixed(1));
+    EXPECT_FALSE(shape->getOutput()->isShapeValueWhollyFixed());
 
     auto direct = g->addOp<ShapeObj>(input, nullptr);
     EXPECT_TRUE(direct->getOutput()->isShapeValueFixed(1));
+}
+
+/// An operator that has not said which dimensions it works out from keeps the
+/// conservative answer, so adding `dimSources` to some operators cannot settle
+/// a dimension downstream of one that stayed quiet.
+TEST(ShapeFold, AnOperatorThatSaysNothingUnsettlesEverything) {
+    auto runtime = NativeCpuRuntimeObj::getInstance();
+    Graph g = make_ref<GraphObj>(runtime);
+
+    auto input = g->addTensor(Shape{2, 3}, DataType::Float32);
+    input->setDimDescs({{true, "batch"}, {false, ""}});
+    // Transpose does not override `dimSources`, though its answer would be the
+    // permutation. Until it does, both dimensions of what it computes are read
+    // as replaceable -- including the one that came from the fixed three.
+    auto moved = g->addOp<TransposeObj>(input, nullptr, vector<int>{1, 0});
+    auto shape = g->addOp<ShapeObj>(moved->getOutput(), nullptr);
+    g->shape_infer();
+
+    EXPECT_FALSE(shape->getOutput()->isShapeValueFixed(0));
+    EXPECT_FALSE(shape->getOutput()->isShapeValueFixed(1));
+}
+
+/// The case per-dimension answers were added for: a deployment that serves one
+/// picture size at a batch size it varies. Height and width are pinned, batch
+/// is not, and what the fold settles has to survive the batch moving afterwards
+/// -- settling something the batch reaches would be a wrong answer rather than
+/// a slow one.
+TEST(ShapeFold, PinningSomeDimensionsSettlesOnlyWhatFollowsThem) {
+    auto runtime = NativeCpuRuntimeObj::getInstance();
+    Graph g = make_ref<GraphObj>(runtime);
+
+    auto input = g->addTensor(Shape{1, 3, 8, 8}, DataType::Float32);
+    // Height and width pinned, batch still free. This is what `pin_dims` leaves
+    // behind once a deployment has said which size it serves.
+    input->setDimDescs(
+        {{true, "batch"}, {false, ""}, {false, ""}, {false, ""}});
+    auto weight = g->addTensor(Shape{4, 3, 3, 3}, DataType::Float32);
+    weight->dataMalloc();
+    weight->setWeight();
+    auto conv = g->addOp<ConvObj>(input, weight, nullptr, 1, 1);
+    auto pooled = g->addOp<MaxPoolObj>(conv->getOutput(), nullptr, 2, 2, 1, 1,
+                                       0, 0, 2, 2, 0);
+    auto activated = g->addOp<ReluObj>(pooled->getOutput(), nullptr);
+    auto shape = g->addOp<ShapeObj>(activated->getOutput(), nullptr);
+    g->shape_infer();
+
+    // Batch reaches dimension zero and nothing else. Channels come from the
+    // weight, and the spatial dimensions from sizes that were pinned.
+    EXPECT_FALSE(shape->getOutput()->isShapeValueFixed(0));
+    EXPECT_TRUE(shape->getOutput()->isShapeValueFixed(1));
+    EXPECT_TRUE(shape->getOutput()->isShapeValueFixed(2));
+    EXPECT_TRUE(shape->getOutput()->isShapeValueFixed(3));
+
+    // And it stays that way once the batch actually moves: the settled
+    // dimensions hold their values while dimension zero follows.
+    const auto settled = *shape->getOutput()->getShapeValue();
+    input->setShape(Shape{7, 3, 8, 8});
+    g->shape_infer();
+    const auto after = *shape->getOutput()->getShapeValue();
+    EXPECT_EQ(after[0], 7);
+    EXPECT_EQ(after[1], settled[1]);
+    EXPECT_EQ(after[2], settled[2]);
+    EXPECT_EQ(after[3], settled[3]);
+    EXPECT_FALSE(shape->getOutput()->isShapeValueFixed(0));
+    EXPECT_TRUE(shape->getOutput()->isShapeValueFixed(3));
 }
 
 /// A weight is the data it carries and its shape is that data's shape. Nothing

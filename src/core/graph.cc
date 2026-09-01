@@ -421,22 +421,29 @@ Tensor GraphObj::getTensor(int fuid) const {
 }
 
 void GraphObj::spreadFixedDims(const Operator &op) {
-    const bool settled =
-        std::all_of(op->getInputs().begin(), op->getInputs().end(),
-                    [](const Tensor &input) {
-                        for (size_t i = 0; i < input->getRank(); ++i) {
-                            if (input->isDimDynamic(i)) {
-                                return false;
-                            }
-                        }
-                        return true;
-                    });
-    for (const auto &output : op->getOutputs()) {
-        // Saying nothing leaves every dimension replaceable, which is what an
-        // operator reading a dimension that still moves has to report.
-        output->setDimDescs(
-            settled ? DimDescs(output->getRank(), DimDesc{false, ""})
-                    : DimDescs{});
+    const auto &inputs = op->getInputs();
+    const auto &outputs = op->getOutputs();
+    for (size_t o = 0; o < outputs.size(); ++o) {
+        const auto rank = outputs[o]->getRank();
+        DimDescs descs(rank, DimDesc{false, ""});
+        for (size_t d = 0; d < rank; ++d) {
+            // A dimension follows some input dimensions, and can change exactly
+            // when one of those can. Naming none of them says it follows
+            // nothing a caller may vary.
+            for (const auto &source : op->dimSources(o, d)) {
+                IT_ASSERT(source.input < inputs.size());
+                if (inputs[source.input]->isDimDynamic(source.dim)) {
+                    descs[d].dynamic = true;
+                    break;
+                }
+            }
+        }
+        // A tensor with every dimension dynamic is the same thing as one that
+        // declared nothing, and that is how such a tensor has always been left.
+        const bool anyFixed =
+            std::any_of(descs.begin(), descs.end(),
+                        [](const DimDesc &d) { return !d.dynamic; });
+        outputs[o]->setDimDescs(anyFixed ? std::move(descs) : DimDescs{});
     }
 }
 

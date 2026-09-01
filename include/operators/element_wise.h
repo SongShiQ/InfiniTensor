@@ -23,6 +23,9 @@ class ElementWiseObj : public OperatorObj {
                    Tensor output);
     optional<vector<Shape>> inferShape(const TensorVec &inputs) override;
     void inferShapeValue() override;
+    /// Broadcasting lines the inputs up at their trailing dimension, so an
+    /// output dimension follows whichever inputs reach that far.
+    vector<DimSource> dimSources(size_t output, size_t dim) const override;
 
     std::string toString() const override;
     int numInputs() const override { return 2; }

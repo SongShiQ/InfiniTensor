@@ -42,6 +42,12 @@ struct OpPerfKey {
     }
 };
 
+/// @brief One dimension of one input that an output dimension follows.
+struct DimSource {
+    size_t input; ///< Index into the operator's inputs.
+    size_t dim;   ///< Which dimension of that input.
+};
+
 class GraphObj;
 class OperatorObj : public Object {
     friend class GraphObj;
@@ -68,6 +74,25 @@ class OperatorObj : public Object {
      * this.
      */
     virtual void inferShapeValue() {}
+    /**
+     * @brief Which input dimensions dimension `dim` of output `output` was
+     * worked out from.
+     *
+     * A computed dimension can change exactly when one of the dimensions it
+     * follows can, so this is what says whether it is settled. Returning an
+     * empty list claims the dimension follows nothing a caller may vary, and so
+     * is settled whatever the graph is given -- an output channel count, say,
+     * which comes from a weight.
+     *
+     * The default names every dimension of every input, which is the
+     * conservative reading: it settles an output only when the whole of every
+     * input is settled. An operator that knows better says so, and one that
+     * does not stays correct.
+     *
+     * Only shapes are being described, so the answer must not depend on the
+     * sizes those dimensions currently hold.
+     */
+    virtual vector<DimSource> dimSources(size_t output, size_t dim) const;
     /**
      * @brief Constructs outputs (if requried) and check whether the operator is
      * valid.

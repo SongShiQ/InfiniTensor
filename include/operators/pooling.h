@@ -42,6 +42,9 @@ class PoolingObj : public OperatorObj {
     OP_CLONE(PoolingObj);
 
     optional<vector<Shape>> inferShape(const TensorVec &inputs) override;
+    /// The window is an attribute rather than an input, so every dimension --
+    /// spatial ones included -- follows the one it strides over.
+    vector<DimSource> dimSources(size_t output, size_t dim) const override;
     std::string toString() const override;
     int numInputs() const override { return 1; }
     int numOutputs() const override { return 1; }

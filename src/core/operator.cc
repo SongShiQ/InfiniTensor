@@ -12,6 +12,20 @@ OperatorObj::OperatorObj(OpType opType, TensorVec inputs, TensorVec outputs)
     }
 }
 
+vector<DimSource> OperatorObj::dimSources(size_t output, size_t dim) const {
+    IT_ASSERT(output < outputs.size());
+    IT_ASSERT(dim < outputs[output]->getRank());
+    // Knowing nothing about how this operator works out its dimensions, every
+    // dimension of every input has to count as one the output follows.
+    vector<DimSource> sources;
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        for (size_t d = 0; d < inputs[i]->getRank(); ++d) {
+            sources.push_back(DimSource{i, d});
+        }
+    }
+    return sources;
+}
+
 void OperatorObj::removePredecessors(const Operator &op) {
     for (auto it = predecessors.begin(); it != predecessors.end();) {
         if (it->lock() == op)

@@ -16,6 +16,24 @@ optional<vector<Shape>> ElementWiseObj::inferShape(const TensorVec &inputs) {
     return {{res}};
 }
 
+vector<DimSource> ElementWiseObj::dimSources(size_t output, size_t dim) const {
+    IT_ASSERT(output == 0);
+    const auto rank = outputs[0]->getRank();
+    IT_ASSERT(dim < rank);
+    // Broadcasting aligns the inputs at the last dimension, so an input of
+    // lesser rank does not reach the leading dimensions at all.
+    vector<DimSource> sources;
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        const auto inputRank = inputs[i]->getRank();
+        const auto missing = rank - inputRank;
+        if (dim < missing) {
+            continue;
+        }
+        sources.push_back(DimSource{i, dim - missing});
+    }
+    return sources;
+}
+
 namespace {
 
 /// @brief One integer operation of a shape computation, or nothing when this
