@@ -41,8 +41,11 @@ void GatherObj::inferShapeValue() {
     const auto &dims = *inputs[0]->getShapeValue();
     const auto &indices = *inputs[1]->getShapeValue();
     vector<int64_t> picked;
+    vector<bool> fixed;
     picked.reserve(indices.size());
-    for (const auto index : indices) {
+    fixed.reserve(indices.size());
+    for (size_t i = 0; i < indices.size(); ++i) {
+        const auto index = indices[i];
         // ONNX counts a negative index back from the end.
         const auto at =
             index < 0 ? index + static_cast<int64_t>(dims.size()) : index;
@@ -50,8 +53,14 @@ void GatherObj::inferShapeValue() {
             return;
         }
         picked.push_back(dims[at]);
+        // Picking a settled element with an index that is itself settled
+        // yields a settled element. An index that could change would reach a
+        // different element next time, so the result is not settled even where
+        // every element it might reach is.
+        fixed.push_back(inputs[0]->isShapeValueFixed(static_cast<size_t>(at)) &&
+                        inputs[1]->isShapeValueFixed(i));
     }
-    outputs[0]->setShapeValue(std::move(picked));
+    outputs[0]->setShapeValue(std::move(picked), std::move(fixed));
 }
 
 // TODO:should check everytime index updated.

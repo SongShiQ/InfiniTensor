@@ -46,14 +46,18 @@ void ConcatObj::inferShapeValue() {
         return;
     }
     vector<int64_t> joined;
+    vector<bool> fixed;
     for (const auto &input : inputs) {
         const auto &value = *input->getShapeValue();
         joined.insert(joined.end(), value.begin(), value.end());
+        for (size_t i = 0; i < value.size(); ++i) {
+            fixed.push_back(input->isShapeValueFixed(i));
+        }
     }
     if (joined.size() != outputs[0]->size()) {
         return;
     }
-    outputs[0]->setShapeValue(std::move(joined));
+    outputs[0]->setShapeValue(std::move(joined), std::move(fixed));
 }
 
 std::string ConcatObj::toString() const {

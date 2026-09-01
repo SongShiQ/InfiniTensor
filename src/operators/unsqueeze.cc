@@ -35,7 +35,12 @@ void UnsqueezeObj::inferShapeValue() {
     if (value.size() != outputs[0]->size()) {
         return;
     }
-    outputs[0]->setShapeValue(value);
+    vector<bool> fixed;
+    fixed.reserve(value.size());
+    for (size_t i = 0; i < value.size(); ++i) {
+        fixed.push_back(inputs[0]->isShapeValueFixed(i));
+    }
+    outputs[0]->setShapeValue(value, std::move(fixed));
 }
 
 std::string UnsqueezeObj::toString() const {
