@@ -1,6 +1,7 @@
 #include "operators/element_wise.h"
 #include "core/kernel.h"
 #include "utils/operator_utils.h"
+#include <type_traits>
 
 namespace infini {
 class NativeElementWise : public CpuKernelWithoutConfig {
@@ -17,6 +18,12 @@ class NativeElementWise : public CpuKernelWithoutConfig {
     }
 
     template <typename T> static T divCompute(T val0, T val1) {
+        if constexpr (std::is_integral_v<T>) {
+            // A whole number divided by zero has no answer to give, and the
+            // hardware answers by halting the process, so the operand is
+            // checked here where it is still known what was asked for.
+            IT_ASSERT(val1 != 0, "element-wise division by zero");
+        }
         return (T)(val0 / val1);
     }
 
@@ -120,6 +127,10 @@ class NativeElementWise : public CpuKernelWithoutConfig {
         int dataTypeIdx = _op->getDType().getIndex();
         switch (dataTypeIdx) {
             CASE(1); // DataType::Float32
+            break;
+            CASE(6); // DataType::Int32
+            break;
+            CASE(7); // DataType::Int64
             break;
             CASE(12); // DataType::UInt32
             break;
