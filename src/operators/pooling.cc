@@ -1,4 +1,5 @@
 #include "operators/pooling.h"
+#include <algorithm>
 
 namespace infini {
 
@@ -33,6 +34,15 @@ optional<vector<Shape>> PoolingObj::inferShape(const TensorVec &inputs) {
         oh = floor(((float)(h + 2 * ph - dh * (kh - 1) - 1)) / sh + 1);
         ow = floor(((float)(w + 2 * pw - dw * (kw - 1) - 1)) / sw + 1);
     }
+    // A window wider than what it is given still covers a position, and covers
+    // it once, so there is one row and one column of results however small the
+    // input is. Working the count out arithmetically gives zero or less there,
+    // and a spatial size of zero is not a picture the rest of a graph can read:
+    // the shape chain after this carries the zero into a reshape target, where
+    // ONNX spells a dimension of zero the same way it spells keeping the
+    // dimension the input already has. onnxruntime answers one here too.
+    oh = std::max(oh, 1);
+    ow = std::max(ow, 1);
 
     auto ret = input->getDims();
     if (input->getRank() == 4) {

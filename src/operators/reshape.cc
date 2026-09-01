@@ -21,6 +21,21 @@ Shape resolveTargetShape(const Shape &dims, const Shape &inputShape, int size) {
     Shape outputShape = dims;
     for (int i = 0; i < (int)dims.size(); ++i) {
         if (dims[i] == 0) {
+            // A zero says to keep whatever the input has in this position, so
+            // there has to be one. A target longer than the input reaches past
+            // its end here, which read whatever the memory held and produced a
+            // dimension that varied from one run to the next.
+            //
+            // Nothing distinguishes this from a dimension that is genuinely
+            // zero, because ONNX gives the two the same spelling. A graph
+            // reaching this point asked for a dimension that does not exist
+            // either way, and saying so is the only answer available.
+            IT_ASSERT(i < (int)inputShape.size(),
+                      "this reshape keeps the input dimension at position " +
+                          std::to_string(i) + ", but the input has only " +
+                          std::to_string(inputShape.size()) +
+                          " dimensions; a zero in a target shape means the "
+                          "dimension the input already has there");
             outputShape[i] = inputShape[i];
         }
         if (dims[i] == -1) {
@@ -28,9 +43,17 @@ Shape resolveTargetShape(const Shape &dims, const Shape &inputShape, int size) {
         }
     }
     if (index != -1) {
-        outputShape[index] =
-            size / (-std::accumulate(outputShape.begin(), outputShape.end(), 1,
-                                     [](auto acc, auto x) { return acc * x; }));
+        const int known =
+            -std::accumulate(outputShape.begin(), outputShape.end(), 1,
+                             [](auto acc, auto x) { return acc * x; });
+        // The leftover is what the other dimensions do not account for, which
+        // there is no answer to when they account for nothing: every size at
+        // all divides into zero elements the same number of times.
+        IT_ASSERT(known != 0,
+                  "this reshape asks for the dimension left over once the "
+                  "others are taken, but one of those is zero, so there is no "
+                  "such number");
+        outputShape[index] = size / known;
     }
     int outputSize = std::accumulate(outputShape.begin(), outputShape.end(), 1,
                                      [](auto acc, auto x) { return acc * x; });
