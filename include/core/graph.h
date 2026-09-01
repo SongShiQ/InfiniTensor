@@ -106,6 +106,13 @@ class GraphObj : public Object {
     /// data, which is the part of it `foldFixedShapeSubgraph` can reach. Says
     /// what a fold started from, so that what it left can be compared against
     /// it.
+    ///
+    /// An operator counts when its type is one a shape computation is built
+    /// from and it carries a shape value. The type on its own is not enough,
+    /// because those types serve data as readily as dimensions: an operator
+    /// scaling activations is not something a fold could ever reach, and
+    /// counting it would report a shape subgraph larger than the one that
+    /// exists.
     size_t shapeSubgraphSize() const;
 
     /// @brief Tensors dropped by `foldFixedShapeSubgraph` as no longer

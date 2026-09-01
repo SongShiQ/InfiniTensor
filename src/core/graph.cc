@@ -263,10 +263,24 @@ void writeShapeValueAsData(const Tensor &tensor) {
 
 size_t GraphObj::shapeSubgraphSize() const {
     // The same test the fold applies, so that the two cannot come to disagree
-    // about what a shape operator is.
+    // about what a shape operator is. Both halves are needed: the type says
+    // which operators a shape computation is built from, and carrying a shape
+    // value says this one is part of such a computation rather than of the
+    // model. The types are shared -- an attention export squeezes and scales
+    // activations with the very operators an exporter joins dimensions with --
+    // so the type alone counts arithmetic on data as though shapes could be
+    // folded out of it.
     return static_cast<size_t>(
         std::count_if(ops.begin(), ops.end(), [](const Operator &op) {
-            return describesShapes(op);
+            if (!describesShapes(op)) {
+                return false;
+            }
+            const auto &outputs = op->getOutputs();
+            return !outputs.empty() &&
+                   std::all_of(outputs.begin(), outputs.end(),
+                               [](const Tensor &t) {
+                                   return t->getShapeValue().has_value();
+                               });
         }));
 }
 

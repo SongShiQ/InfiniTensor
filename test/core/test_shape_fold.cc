@@ -78,8 +78,7 @@ TEST(ShapeFold, FixednessReachesComputedTensors) {
     Graph g = make_ref<GraphObj>(runtime);
 
     auto input = g->addTensor(Shape{1, 3, 8, 8}, DataType::Float32);
-    input->setDimDescs(
-        {{false, ""}, {false, ""}, {false, ""}, {false, ""}});
+    input->setDimDescs({{false, ""}, {false, ""}, {false, ""}, {false, ""}});
     auto computed = g->addOp<ReluObj>(input, nullptr);
     auto shape = g->addOp<ShapeObj>(computed->getOutput(), nullptr);
     g->shape_infer();
@@ -122,9 +121,9 @@ TEST(ShapeFold, OneDimensionThatMovesUnsettlesTheWholeTensor) {
 }
 
 /// A weight is the data it carries and its shape is that data's shape. Nothing
-/// hands one a shape -- only an input is ever given one -- so its dimensions are
-/// fixed whatever it was or was not told about them. Otherwise fixedness would
-/// stop at the first layer that has weights, which is most of them.
+/// hands one a shape -- only an input is ever given one -- so its dimensions
+/// are fixed whatever it was or was not told about them. Otherwise fixedness
+/// would stop at the first layer that has weights, which is most of them.
 TEST(ShapeFold, FixednessCrossesALayerWithWeights) {
     auto runtime = NativeCpuRuntimeObj::getInstance();
     Graph g = make_ref<GraphObj>(runtime);
@@ -481,9 +480,9 @@ TEST(ShapeFold, SliceCarriesThePartItTook) {
     input->setDimDescs({{true, "batch"}, {false, ""}, {false, ""}});
     auto shape = g->addOp<ShapeObj>(input, nullptr);
     // The leading two dimensions: one that moves and one that does not.
-    auto head = g->addOp<SliceObj>(shape->getOutput(), nullptr, vector<int>{0},
-                                   vector<int>{2}, vector<int>{0},
-                                   std::nullopt);
+    auto head =
+        g->addOp<SliceObj>(shape->getOutput(), nullptr, vector<int>{0},
+                           vector<int>{2}, vector<int>{0}, std::nullopt);
 
     const auto &value = head->getOutput()->getShapeValue();
     ASSERT_TRUE(value.has_value());
@@ -503,9 +502,9 @@ TEST(ShapeFold, SettledSliceFolds) {
     input->setDimDescs({{true, "batch"}, {false, ""}, {false, ""}});
     auto shape = g->addOp<ShapeObj>(input, nullptr);
     // The trailing two, both declared fixed.
-    auto tail = g->addOp<SliceObj>(shape->getOutput(), nullptr, vector<int>{1},
-                                   vector<int>{3}, vector<int>{0},
-                                   std::nullopt);
+    auto tail =
+        g->addOp<SliceObj>(shape->getOutput(), nullptr, vector<int>{1},
+                           vector<int>{3}, vector<int>{0}, std::nullopt);
     EXPECT_TRUE(tail->getOutput()->isShapeValueWhollyFixed());
     EXPECT_EQ(*tail->getOutput()->getShapeValue(), (vector<int64_t>{16, 8}));
 
@@ -524,9 +523,9 @@ TEST(ShapeFold, SteppedSliceTakesWhatItLandsOn) {
     input->setDimDescs(
         {{false, ""}, {true, "height"}, {false, ""}, {true, "width"}});
     auto shape = g->addOp<ShapeObj>(input, nullptr);
-    auto every2 = g->addOp<SliceObj>(shape->getOutput(), nullptr,
-                                     vector<int>{0}, vector<int>{4},
-                                     vector<int>{0}, vector<int>{2});
+    auto every2 =
+        g->addOp<SliceObj>(shape->getOutput(), nullptr, vector<int>{0},
+                           vector<int>{4}, vector<int>{0}, vector<int>{2});
 
     const auto &value = every2->getOutput()->getShapeValue();
     ASSERT_TRUE(value.has_value());
@@ -545,9 +544,9 @@ TEST(ShapeFold, SliceOfDataYieldsNoValue) {
 
     auto table = g->addTensor(Shape{4, 4}, DataType::Int64);
     EXPECT_FALSE(table->canHoldShapeValue());
-    auto part = g->addOp<SliceObj>(table, nullptr, vector<int>{0},
-                                   vector<int>{2}, vector<int>{0},
-                                   std::nullopt);
+    auto part =
+        g->addOp<SliceObj>(table, nullptr, vector<int>{0}, vector<int>{2},
+                           vector<int>{0}, std::nullopt);
     EXPECT_FALSE(part->getOutput()->getShapeValue().has_value());
     EXPECT_EQ(g->foldFixedShapeSubgraph(), 0u);
 }
@@ -562,9 +561,9 @@ TEST(ShapeFold, ReshapeReadsATargetThroughASlice) {
     auto input = g->addTensor(Shape{2, 3, 4}, DataType::Float32);
     input->setDimDescs({{true, "batch"}, {true, "seq"}, {false, ""}});
     auto shape = g->addOp<ShapeObj>(input, nullptr);
-    auto head = g->addOp<SliceObj>(shape->getOutput(), nullptr, vector<int>{0},
-                                   vector<int>{2}, vector<int>{0},
-                                   std::nullopt);
+    auto head =
+        g->addOp<SliceObj>(shape->getOutput(), nullptr, vector<int>{0},
+                           vector<int>{2}, vector<int>{0}, std::nullopt);
     auto target = g->addOp<ConcatObj>(
         TensorVec{head->getOutput(), constantOf(g, {4})}, nullptr, 0);
     auto reshaped = g->addOp<ReshapeObj>(input, target->getOutput(), nullptr);
@@ -575,6 +574,47 @@ TEST(ShapeFold, ReshapeReadsATargetThroughASlice) {
     input->setShape({5, 7, 4});
     g->shape_infer();
     EXPECT_EQ(reshaped->getOutput()->getDims(), (Shape{5, 7, 4}));
+}
+
+/// The operators a shape computation is built from are the operators real data
+/// uses too: an attention export squeezes and scales activations with the same
+/// `Squeeze` and `Mul` an exporter joins dimensions with. Counting by type
+/// alone reported those as part of the shape subgraph, which a fold can never
+/// reach, so it claimed a subgraph larger than the one that exists -- and the
+/// number it left behind never fell to zero however completely the real one
+/// folded.
+TEST(ShapeFold, TheCountLeavesOutArithmeticOnData) {
+    auto runtime = NativeCpuRuntimeObj::getInstance();
+    Graph g = make_ref<GraphObj>(runtime);
+
+    // A shape computation: settled, and countable.
+    auto input = g->addTensor(Shape{1, 3, 8, 8}, DataType::Float32);
+    input->setDimDescs(
+        {{true, "batch"}, {false, ""}, {false, ""}, {false, ""}});
+    auto shape = g->addOp<ShapeObj>(input, nullptr);
+    auto height =
+        g->addOp<GatherObj>(shape->getOutput(), scalarOf(g, 2), nullptr, 0);
+    auto lifted =
+        g->addOp<UnsqueezeObj>(height->getOutput(), nullptr, Shape{0});
+
+    // And a `Mul` on the activations themselves, of a type the count includes,
+    // carrying no shape value because a rank-four float tensor cannot hold one.
+    auto scale = g->addTensor(Shape{1, 3, 8, 8}, DataType::Float32);
+    auto scaled = g->addOp<MulObj>(input, scale, nullptr);
+    EXPECT_FALSE(scaled->getOutput()->getShapeValue().has_value());
+
+    EXPECT_EQ(g->getOperators().size(), 4u);
+    EXPECT_EQ(g->shapeSubgraphSize(), 3u);
+
+    // So a fold that reaches everything it can leaves nothing counted, rather
+    // than leaving the arithmetic behind as though a shape were still in it.
+    EXPECT_EQ(g->foldFixedShapeSubgraph(), 3u);
+    EXPECT_EQ(g->shapeSubgraphSize(), 0u);
+    EXPECT_EQ(g->getOperators().size(), 1u);
+    EXPECT_TRUE(g->checkValid());
+
+    // The value the chain worked out is still readable where it ended.
+    EXPECT_EQ(*lifted->getOutput()->getShapeValue(), (vector<int64_t>{8}));
 }
 
 } // namespace infini
