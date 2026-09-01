@@ -1,5 +1,6 @@
 #include "operators/matmul.h"
 #include "core/kernel.h"
+#include "utils/operator_utils.h"
 #include <numeric>
 
 namespace infini {
@@ -19,7 +20,6 @@ class NaiveMatmul : public CpuKernelWithoutConfig {
     template <typename T>
     void doCompute(const Operator &_op, const RuntimeObj *context) const {
         auto op = as<MatmulObj>(_op);
-        IT_ASSERT(op->getInputs().size() == 2, "Bias is not supported yet.");
         T *A = op->getInputs(0)->getRawDataPtr<T *>();
         T *B = op->getInputs(1)->getRawDataPtr<T *>();
         T *C = op->getOutput()->getRawDataPtr<T *>();
@@ -44,16 +44,54 @@ class NaiveMatmul : public CpuKernelWithoutConfig {
         const int strideA = batchA == 1 ? 0 : M * K;
         const int strideB = batchB == 1 ? 0 : K * N;
 
+        // A `Gemm` carries the bias of the layer it came from as a third
+        // operand, and a simplifier will fuse a matmul and its following add
+        // into one, so refusing a bias here refuses an ordinary linear layer.
+        // It is added over the last two dimensions of the result, broadcast the
+        // way any operand is, which is usually one value per output column.
+        const bool hasBias = op->getInputs().size() > 2;
+        const T *bias =
+            hasBias ? op->getInputs(2)->getRawDataPtr<T *>() : nullptr;
+        // The same right-aligned broadcast the element-wise kernel does, over
+        // the matrix the bias is added to rather than over the whole stack: a
+        // bias is a property of the layer, so every matrix in the batch gets
+        // the same one.
+        const Shape matrix{M, N};
+        Shape biasShape(matrix.size(), 1);
+        Shape biasStride(matrix.size(), 0);
+        if (hasBias) {
+            const auto &dims = op->getInputs(2)->getDims();
+            IT_ASSERT(dims.size() <= matrix.size(),
+                      "a bias may not have more dimensions than the matrix it "
+                      "is added to");
+            std::copy(dims.begin(), dims.end(),
+                      biasShape.begin() + (matrix.size() - dims.size()));
+            for (size_t i = 0; i < matrix.size(); ++i) {
+                IT_ASSERT(biasShape[i] == matrix[i] || biasShape[i] == 1,
+                          "a bias dimension must match the matrix or be one");
+            }
+            int p = 1;
+            for (auto i = matrix.size(); i > 0; --i) {
+                biasStride[i - 1] = p;
+                p = p * biasShape[i - 1];
+            }
+        }
+
         for (int p = 0; p < batch; p++) {
             const T *a = A + static_cast<ptrdiff_t>(p) * strideA;
             const T *b = B + static_cast<ptrdiff_t>(p) * strideB;
             T *c = C + static_cast<ptrdiff_t>(p) * M * N;
             for (int i = 0; i < M; i++) {
                 for (int j = 0; j < N; j++) {
-                    c[i * N + j] = 0;
+                    T sum = 0;
                     for (int k = 0; k < K; k++) {
-                        c[i * N + j] += a[i * K + k] * b[k * N + j];
+                        sum += a[i * K + k] * b[k * N + j];
                     }
+                    if (hasBias) {
+                        sum += bias[delocate_index({i, j}, biasShape,
+                                                   biasStride)];
+                    }
+                    c[i * N + j] = sum;
                 }
             }
         }
